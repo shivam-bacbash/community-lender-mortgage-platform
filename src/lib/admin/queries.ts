@@ -43,12 +43,21 @@ export async function getAdminShellData() {
   return profile;
 }
 
-function adminClient() {
-  return createSupabaseAdminClient();
+function getAdminClientIfAvailable() {
+  try {
+    return createSupabaseAdminClient();
+  } catch {
+    return null;
+  }
 }
 
 async function ensurePipelineStages(organizationId: string) {
-  const admin = adminClient();
+  const admin = getAdminClientIfAvailable();
+
+  if (!admin) {
+    return;
+  }
+
   const { count } = await admin
     .from("pipeline_stages")
     .select("id", { count: "exact", head: true })
@@ -65,7 +74,12 @@ async function getAuthUserMap(userIds: string[]) {
     return new Map<string, { email: string | null; lastActiveAt: string | null }>();
   }
 
-  const admin = adminClient();
+  const admin = getAdminClientIfAvailable();
+
+  if (!admin) {
+    return new Map<string, { email: string | null; lastActiveAt: string | null }>();
+  }
+
   const pages = await Promise.all([1, 2, 3].map((page) => admin.auth.admin.listUsers({ page, perPage: 100 })));
   const users = pages.flatMap((page) => page.data.users ?? []);
 

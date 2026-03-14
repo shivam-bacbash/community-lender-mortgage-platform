@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:migrate:remote": "./scripts/run_remote_migrations.sh",
+    "db:seed:demo": "./scripts/run_demo_seed.sh",
+    "db:setup:demo": "./scripts/run_demo_setup.sh"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
