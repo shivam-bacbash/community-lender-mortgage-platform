@@ -34,3 +34,11 @@ export function getAppUrl() {
     "http://localhost:3000"
   );
 }
+
+export function getAppSecretKey() {
+  return getRequiredEnv("APP_SECRET_KEY");
+}
+
+export function getResendFromEmail() {
+  return getRequiredEnv("RESEND_FROM_EMAIL");
+}
