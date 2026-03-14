@@ -5,6 +5,12 @@ import { revalidatePath } from "next/cache";
 import { randomUUID, createHash } from "node:crypto";
 
 import { runAutomaticAnalyses } from "@/lib/ai/analyses";
+import { analyzeDocumentUpload } from "@/lib/ai/document-extraction";
+import {
+  getDocumentCategory,
+  getDocumentExpiryDays,
+  type DocumentType,
+} from "@/lib/documents/config";
 import { getResendClient } from "@/lib/email/resend";
 import {
   documentUploadSchema,
@@ -543,6 +549,13 @@ async function ensureDocumentsBucket() {
   return admin;
 }
 
+function revalidateBorrowerLoanPaths(loanId: string) {
+  revalidatePath(`/borrower/loans/${loanId}`);
+  revalidatePath(`/borrower/loans/${loanId}/documents`);
+  revalidatePath(`/staff/loans/${loanId}`);
+  revalidatePath(`/staff/loans/${loanId}/documents`);
+}
+
 export async function uploadBorrowerDocument(
   values: DocumentUploadInput,
   file: File | null,
@@ -569,6 +582,7 @@ export async function uploadBorrowerDocument(
     const storagePath = `documents/${loan.organization_id}/${parsed.loanId}/${randomUUID()}-${extensionSafeName}`;
     const fileBuffer = Buffer.from(await file.arrayBuffer());
     const checksum = createHash("sha256").update(fileBuffer).digest("hex");
+    const documentType = parsed.documentType as DocumentType;
 
     const { data: storageData, error: uploadError } = await admin.storage
       .from("documents")
@@ -581,6 +595,34 @@ export async function uploadBorrowerDocument(
       throw new Error(uploadError?.message ?? "Unable to upload the file.");
     }
 
+    const { data: existingLatest, error: latestError } = await supabase
+      .from("documents")
+      .select("id, version, parent_document_id")
+      .eq("loan_application_id", parsed.loanId)
+      .eq("document_type", parsed.documentType)
+      .eq("is_latest", true)
+      .is("deleted_at", null)
+      .maybeSingle();
+
+    if (latestError) {
+      throw new Error(latestError.message);
+    }
+
+    if (existingLatest?.id) {
+      const { error: versionError } = await supabase
+        .from("documents")
+        .update({ is_latest: false })
+        .eq("id", existingLatest.id);
+
+      if (versionError) {
+        throw new Error(versionError.message);
+      }
+    }
+
+    const expiryDays = getDocumentExpiryDays(documentType);
+    const expiresAt =
+      expiryDays === null ? null : new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000).toISOString();
+
     const { data: documentRow, error: insertError } = await supabase
       .from("documents")
       .insert({
@@ -588,11 +630,17 @@ export async function uploadBorrowerDocument(
         loan_application_id: parsed.loanId,
         uploaded_by: profile.id,
         document_type: parsed.documentType,
+        document_category: getDocumentCategory(documentType),
         file_name: file.name,
         storage_path: storageData.path,
         file_size_bytes: file.size,
         mime_type: file.type,
         checksum,
+        version: existingLatest ? Number(existingLatest.version ?? 1) + 1 : 1,
+        parent_document_id: existingLatest
+          ? existingLatest.parent_document_id ?? existingLatest.id
+          : null,
+        expires_at: expiresAt,
         status: "pending",
       })
       .select("id")
@@ -602,11 +650,63 @@ export async function uploadBorrowerDocument(
       throw new Error(insertError?.message ?? "Unable to record the uploaded document.");
     }
 
-    revalidatePath(`/borrower/loans/${parsed.loanId}`);
-    revalidatePath(`/borrower/loans/${parsed.loanId}/documents`);
+    const { data: pendingRequest } = await supabase
+      .from("document_requests")
+      .select("id")
+      .eq("loan_application_id", parsed.loanId)
+      .eq("document_type", parsed.documentType)
+      .eq("status", "pending")
+      .is("deleted_at", null)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (pendingRequest?.id) {
+      const { error: requestError } = await admin
+        .from("document_requests")
+        .update({
+          status: "fulfilled",
+          fulfilled_by_document_id: documentRow.id,
+          fulfilled_at: new Date().toISOString(),
+        })
+        .eq("id", pendingRequest.id);
+
+      if (requestError) {
+        throw new Error(requestError.message);
+      }
+    }
+
+    await admin.from("analytics_events").insert({
+      organization_id: loan.organization_id,
+      actor_id: profile.id,
+      loan_application_id: parsed.loanId,
+      event_name: "borrower.document_uploaded",
+      properties: {
+        document_type: parsed.documentType,
+        version: existingLatest ? Number(existingLatest.version ?? 1) + 1 : 1,
+        request_fulfilled: Boolean(pendingRequest?.id),
+      },
+      device_type: "desktop",
+      browser: "unknown",
+    });
+
+    revalidateBorrowerLoanPaths(parsed.loanId);
 
     after(async () => {
-      // Placeholder hook for M4 document extraction. Upload completion should not block the borrower.
+      try {
+        await analyzeDocumentUpload({
+          documentId: documentRow.id,
+          loanId: parsed.loanId,
+          triggeredByProfile: profile.id,
+          requestedType: parsed.documentType,
+          fileName: file.name,
+          mimeType: file.type,
+          fileSizeBytes: file.size,
+          checksum,
+        });
+      } catch {
+        // Best-effort AI classification should never block borrower flows.
+      }
     });
 
     return { data: { documentId: documentRow.id }, error: null };

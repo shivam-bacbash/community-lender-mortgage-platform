@@ -1,16 +1,18 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 
+import { UploadZone } from "@/components/documents/UploadZone";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/field";
 import { Select } from "@/components/ui/select";
 import { uploadBorrowerDocument } from "@/lib/actions/borrower-portal";
+import { getDocumentTypeLabel } from "@/lib/documents/config";
 
 export function DocumentUploadForm({ loanId }: { loanId: string }) {
-  const fileRef = useRef<HTMLInputElement | null>(null);
   const [documentType, setDocumentType] = useState("paystub");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [serverError, setServerError] = useState<string | null>(null);
   const [serverSuccess, setServerSuccess] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -22,12 +24,11 @@ export function DocumentUploadForm({ loanId }: { loanId: string }) {
         event.preventDefault();
         setServerError(null);
         setServerSuccess(null);
-        const file = fileRef.current?.files?.[0] ?? null;
 
         startTransition(async () => {
           const result = await uploadBorrowerDocument(
             { loanId, documentType: documentType as never },
-            file,
+            selectedFile,
           );
 
           if (result.error) {
@@ -35,16 +36,13 @@ export function DocumentUploadForm({ loanId }: { loanId: string }) {
             return;
           }
 
-          setServerSuccess("Document uploaded and queued for review.");
-
-          if (fileRef.current) {
-            fileRef.current.value = "";
-          }
+          setServerSuccess(`${getDocumentTypeLabel(documentType)} uploaded and queued for review.`);
+          setSelectedFile(null);
         });
       }}
     >
-      <div className="flex flex-col gap-4 md:flex-row md:items-end">
-        <Field id="documentType" label="Document type" className="md:flex-1">
+      <div className="grid gap-4 lg:grid-cols-[240px_1fr_auto] lg:items-end">
+        <Field id="documentType" label="Document type">
           <Select id="documentType" value={documentType} onChange={(event) => setDocumentType(event.target.value)}>
             <option value="paystub">Paystub</option>
             <option value="w2">W-2</option>
@@ -56,16 +54,16 @@ export function DocumentUploadForm({ loanId }: { loanId: string }) {
             <option value="other">Other</option>
           </Select>
         </Field>
-        <Field id="documentFile" label="File" className="md:flex-1">
-          <input
-            id="documentFile"
-            ref={fileRef}
-            type="file"
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-gray-700">File</p>
+          <UploadZone
+            label={`Upload ${getDocumentTypeLabel(documentType)}`}
             accept=".pdf,.jpg,.jpeg,.png"
-            className="block w-full text-sm text-gray-600"
+            fileName={selectedFile?.name ?? null}
+            onFileSelect={setSelectedFile}
           />
-        </Field>
-        <Button type="submit" loading={isPending}>
+        </div>
+        <Button type="submit" loading={isPending} disabled={!selectedFile} className="lg:self-end">
           Upload document
         </Button>
       </div>

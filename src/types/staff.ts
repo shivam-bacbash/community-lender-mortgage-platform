@@ -1,6 +1,10 @@
 import type { Json } from "@/types/database";
 import type { Role } from "@/types/auth";
-import type { UnderwritingSummaryResult } from "@/lib/ai/results";
+import type {
+  DocumentExtractionResult,
+  RiskAssessmentResult,
+  UnderwritingSummaryResult,
+} from "@/lib/ai/results";
 
 export interface StaffProfileSummary {
   id: string;
@@ -141,9 +145,15 @@ export interface StaffLoanDocument {
   storage_path: string;
   created_at: string;
   status: string;
+  version: number;
+  is_latest: boolean;
+  parent_document_id: string | null;
+  expires_at: string | null;
   uploaded_by_name: string;
   rejection_reason: string | null;
   mime_type: string | null;
+  file_size_bytes: number | null;
+  ai_extracted_data: DocumentExtractionResult | null;
 }
 
 export interface StaffDocumentRequest {
@@ -153,6 +163,22 @@ export interface StaffDocumentRequest {
   due_date: string | null;
   status: string;
   created_at: string;
+  fulfilled_at?: string | null;
+}
+
+export interface StaffDocumentChecklistItem {
+  document_type: string;
+  label: string;
+  is_complete: boolean;
+  latest_status: string | null;
+}
+
+export interface StaffDocumentExpiryItem {
+  id: string;
+  document_type: string;
+  file_name: string;
+  expires_at: string;
+  status: "expiring_soon" | "expired";
 }
 
 export interface StaffLoanCondition {
@@ -224,6 +250,13 @@ export interface StaffLoanWorkspace {
   } | null;
   documents: StaffLoanDocument[];
   documentRequests: StaffDocumentRequest[];
+  documentChecklist: {
+    completed: number;
+    total: number;
+    percent: number;
+    items: StaffDocumentChecklistItem[];
+  };
+  expiringDocuments: StaffDocumentExpiryItem[];
   conditions: StaffLoanCondition[];
   tasks: StaffLoanTask[];
   messages: StaffLoanMessage[];
@@ -237,7 +270,13 @@ export interface StaffLoanWorkspace {
     error_message: string | null;
     result: Json;
     parsed_underwriting: UnderwritingSummaryResult | null;
+    parsed_risk_assessment: RiskAssessmentResult | null;
   }>;
+  latestCreditReport: {
+    id: string;
+    score: number | null;
+    pulled_at: string;
+  } | null;
   ratios: {
     dti: number | null;
     ltv: number | null;
@@ -258,4 +297,16 @@ export interface StaffLoanWorkspace {
   borrowerName: string;
   borrowerId: string;
   staffMembers: Array<{ id: string; label: string; role: string }>;
+}
+
+export interface StaffLoanDocumentDetail {
+  document: StaffLoanDocument;
+  signedUrl: string | null;
+  versionHistory: StaffLoanDocument[];
+  requestHistory: StaffDocumentRequest[];
+  loan: {
+    id: string;
+    loan_number: string | null;
+    borrower_name: string;
+  };
 }

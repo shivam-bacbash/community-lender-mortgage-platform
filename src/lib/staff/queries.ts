@@ -2,12 +2,23 @@ import { cache } from "react";
 import { notFound, redirect } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import {
+  parseDocumentExtractionResult,
+  parseRiskAssessmentResult,
+  parseUnderwritingSummaryResult,
+} from "@/lib/ai/results";
+import {
+  getDocumentTypeLabel,
+  getRequiredDocumentsForLoanType,
+} from "@/lib/documents/config";
 import { isStaffRole } from "@/lib/auth/roles";
-import { parseUnderwritingSummaryResult } from "@/lib/ai/results";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type {
   StaffActivityItem,
+  StaffDocumentChecklistItem,
+  StaffDocumentExpiryItem,
   StaffLoanHeader,
+  StaffLoanDocumentDetail,
   StaffLoanWorkspace,
   StaffMetricCard,
   StaffPipelineData,
@@ -97,6 +108,52 @@ function extractRecommendation(result: Json): string | null {
   }
 
   return null;
+}
+
+function getDocumentChecklist(
+  loanType: string,
+  documents: Array<{ document_type: string; status: string }>,
+): StaffDocumentChecklistItem[] {
+  const latestByType = new Map(documents.map((document) => [document.document_type, document.status]));
+
+  return getRequiredDocumentsForLoanType(loanType).map((documentType) => {
+    const status = latestByType.get(documentType) ?? null;
+
+    return {
+      document_type: documentType,
+      label: getDocumentTypeLabel(documentType),
+      is_complete: status === "accepted" || status === "pending" || status === "under_review",
+      latest_status: status,
+    };
+  });
+}
+
+function getExpiringDocuments(
+  documents: Array<{ id: string; document_type: string; file_name: string; expires_at: string | null }>,
+): StaffDocumentExpiryItem[] {
+  const now = Date.now();
+  const warningCutoff = now + 7 * 24 * 60 * 60 * 1000;
+
+  return documents.flatMap((document) => {
+    if (!document.expires_at) {
+      return [];
+    }
+
+    const expiresAt = new Date(document.expires_at).getTime();
+    if (Number.isNaN(expiresAt) || expiresAt > warningCutoff) {
+      return [];
+    }
+
+    return [
+      {
+        id: document.id,
+        document_type: document.document_type,
+        file_name: document.file_name,
+        expires_at: document.expires_at,
+        status: expiresAt < now ? "expired" : "expiring_soon",
+      },
+    ];
+  });
 }
 
 async function getStaffMembers(
@@ -479,7 +536,7 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
     supabase
       .from("documents")
       .select(
-        "id, document_type, document_category, file_name, storage_path, created_at, status, rejection_reason, mime_type, uploaded_by",
+        "id, document_type, document_category, file_name, storage_path, created_at, status, rejection_reason, mime_type, uploaded_by, version, is_latest, parent_document_id, expires_at, file_size_bytes, ai_extracted_data",
       )
       .eq("loan_application_id", loanId)
       .eq("is_latest", true)
@@ -487,7 +544,7 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
       .order("document_type", { ascending: true }),
     supabase
       .from("document_requests")
-      .select("id, document_type, message, due_date, status, created_at")
+      .select("id, document_type, message, due_date, status, created_at, fulfilled_at")
       .eq("loan_application_id", loanId)
       .is("deleted_at", null)
       .order("created_at", { ascending: false }),
@@ -603,6 +660,26 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
     propertyData.data?.estimated_value ??
     propertyData.data?.purchase_price ??
     null;
+  const documents = (documentsData.data ?? []).map((document) => ({
+    id: document.id,
+    document_type: document.document_type,
+    document_category: document.document_category,
+    file_name: document.file_name,
+    storage_path: document.storage_path,
+    created_at: document.created_at,
+    status: document.status,
+    version: document.version ?? 1,
+    is_latest: document.is_latest ?? false,
+    parent_document_id: document.parent_document_id,
+    expires_at: document.expires_at,
+    uploaded_by_name: uploaderMap.get(document.uploaded_by)?.name ?? "Unknown user",
+    rejection_reason: document.rejection_reason,
+    mime_type: document.mime_type,
+    file_size_bytes: document.file_size_bytes,
+    ai_extracted_data: parseDocumentExtractionResult(document.ai_extracted_data),
+  }));
+  const documentChecklist = getDocumentChecklist(loan.loan_type, documents);
+  const documentChecklistCompleted = documentChecklist.filter((item) => item.is_complete).length;
 
   return {
     header: {
@@ -622,19 +699,26 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
     assets: assetData.data ?? [],
     liabilities: liabilityData.data ?? [],
     property: propertyData.data ?? null,
-    documents: (documentsData.data ?? []).map((document) => ({
-      id: document.id,
-      document_type: document.document_type,
-      document_category: document.document_category,
-      file_name: document.file_name,
-      storage_path: document.storage_path,
-      created_at: document.created_at,
-      status: document.status,
-      uploaded_by_name: uploaderMap.get(document.uploaded_by)?.name ?? "Unknown user",
-      rejection_reason: document.rejection_reason,
-      mime_type: document.mime_type,
-    })),
+    documents,
     documentRequests: documentRequestsData.data ?? [],
+    documentChecklist: {
+      completed: documentChecklistCompleted,
+      total: documentChecklist.length,
+      percent: documentChecklist.length
+        ? Math.round((documentChecklistCompleted / documentChecklist.length) * 100)
+        : 0,
+      items: documentChecklist,
+    },
+    expiringDocuments: getExpiringDocuments(
+      documents
+        .filter((document) => document.status === "accepted")
+        .map((document) => ({
+          id: document.id,
+          document_type: document.document_type,
+          file_name: document.file_name,
+          expires_at: document.expires_at,
+        })),
+    ),
     conditions: (conditionsData.data ?? []).map((condition) => ({
       id: condition.id,
       condition_type: condition.condition_type,
@@ -691,7 +775,18 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
         analysis.analysis_type === "underwriting_summary"
           ? parseUnderwritingSummaryResult(analysis.result)
           : null,
+      parsed_risk_assessment:
+        analysis.analysis_type === "risk_assessment"
+          ? parseRiskAssessmentResult(analysis.result)
+          : null,
     })),
+    latestCreditReport: creditData.data
+      ? {
+          id: creditData.data.id,
+          score: creditData.data.score,
+          pulled_at: creditData.data.pulled_at,
+        }
+      : null,
     ratios: {
       dti: grossIncome > 0 ? (monthlyDebt + monthlyHousing) / grossIncome : null,
       ltv:
@@ -715,5 +810,119 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
     borrowerName,
     borrowerId: loan.borrower_id,
     staffMembers,
+  };
+}
+
+export async function getStaffLoanDocumentDetail(
+  loanId: string,
+  docId: string,
+): Promise<StaffLoanDocumentDetail> {
+  const workspace = await getStaffLoanWorkspace(loanId);
+  const { supabase } = await requireStaffContext();
+  const [documentResult, requestsResult] = await Promise.all([
+    supabase
+      .from("documents")
+      .select(
+        "id, document_type, document_category, file_name, storage_path, created_at, status, rejection_reason, mime_type, uploaded_by, version, is_latest, parent_document_id, expires_at, file_size_bytes, ai_extracted_data",
+      )
+      .eq("id", docId)
+      .eq("loan_application_id", loanId)
+      .is("deleted_at", null)
+      .maybeSingle(),
+    supabase
+      .from("document_requests")
+      .select("id, document_type, message, due_date, status, created_at, fulfilled_at")
+      .eq("loan_application_id", loanId)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false }),
+  ]);
+
+  if (documentResult.error) {
+    throw new Error(documentResult.error.message);
+  }
+
+  if (!documentResult.data) {
+    notFound();
+  }
+
+  const rootDocumentId = documentResult.data.parent_document_id ?? documentResult.data.id;
+  const [versionsResult, signedUrlResult] = await Promise.all([
+    supabase
+      .from("documents")
+      .select(
+        "id, document_type, document_category, file_name, storage_path, created_at, status, rejection_reason, mime_type, uploaded_by, version, is_latest, parent_document_id, expires_at, file_size_bytes, ai_extracted_data",
+      )
+      .eq("loan_application_id", loanId)
+      .or(`id.eq.${rootDocumentId},parent_document_id.eq.${rootDocumentId}`)
+      .is("deleted_at", null)
+      .order("version", { ascending: false }),
+    supabase.storage.from("documents").createSignedUrl(documentResult.data.storage_path, 3600),
+  ]);
+
+  if (versionsResult.error) {
+    throw new Error(versionsResult.error.message);
+  }
+
+  if (requestsResult.error) {
+    throw new Error(requestsResult.error.message);
+  }
+
+  const uploaderMap = await getNameMap(
+    supabase,
+    [...new Set([
+      ...(versionsResult.data ?? []).map((item) => item.uploaded_by),
+      documentResult.data.uploaded_by,
+    ])],
+    workspace.header.organization_id,
+  );
+
+  const document = {
+    id: documentResult.data.id,
+    document_type: documentResult.data.document_type,
+    document_category: documentResult.data.document_category,
+    file_name: documentResult.data.file_name,
+    storage_path: documentResult.data.storage_path,
+    created_at: documentResult.data.created_at,
+    status: documentResult.data.status,
+    version: documentResult.data.version ?? 1,
+    is_latest: documentResult.data.is_latest ?? false,
+    parent_document_id: documentResult.data.parent_document_id,
+    expires_at: documentResult.data.expires_at,
+    uploaded_by_name: uploaderMap.get(documentResult.data.uploaded_by)?.name ?? "Unknown user",
+    rejection_reason: documentResult.data.rejection_reason,
+    mime_type: documentResult.data.mime_type,
+    file_size_bytes: documentResult.data.file_size_bytes,
+    ai_extracted_data: parseDocumentExtractionResult(documentResult.data.ai_extracted_data),
+  };
+
+  return {
+    document,
+    signedUrl: signedUrlResult.data?.signedUrl ?? null,
+    versionHistory: (versionsResult.data ?? []).map((item) => ({
+      id: item.id,
+      document_type: item.document_type,
+      document_category: item.document_category,
+      file_name: item.file_name,
+      storage_path: item.storage_path,
+      created_at: item.created_at,
+      status: item.status,
+      version: item.version ?? 1,
+      is_latest: item.is_latest ?? false,
+      parent_document_id: item.parent_document_id,
+      expires_at: item.expires_at,
+      uploaded_by_name: uploaderMap.get(item.uploaded_by)?.name ?? "Unknown user",
+      rejection_reason: item.rejection_reason,
+      mime_type: item.mime_type,
+      file_size_bytes: item.file_size_bytes,
+      ai_extracted_data: parseDocumentExtractionResult(item.ai_extracted_data),
+    })),
+    requestHistory: (requestsResult.data ?? []).filter(
+      (request) => request.document_type === document.document_type,
+    ),
+    loan: {
+      id: loanId,
+      loan_number: workspace.header.loan_number,
+      borrower_name: workspace.borrowerName,
+    },
   };
 }

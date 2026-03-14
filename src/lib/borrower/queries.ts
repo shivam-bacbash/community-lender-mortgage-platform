@@ -1,11 +1,19 @@
 import { cache } from "react";
 import { notFound, redirect } from "next/navigation";
 
+import { parseDocumentExtractionResult, parsePrequalificationResult } from "@/lib/ai/results";
+import {
+  getDocumentTypeLabel,
+  getRequiredDocumentsForLoanType,
+} from "@/lib/documents/config";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
-import { parsePrequalificationResult } from "@/lib/ai/results";
 import type {
   BorrowerDashboardLoan,
+  BorrowerDocumentChecklistItem,
+  BorrowerDocumentExpiryItem,
   BorrowerDocumentListItem,
+  BorrowerDocumentRequestItem,
+  BorrowerLoanDocumentWorkspace,
   BorrowerDraftApplication,
   BorrowerLoanDetails,
   BorrowerMessage,
@@ -19,6 +27,52 @@ type MessageRow = {
   sender_id: string;
   channel: string;
 };
+
+function getChecklistItems(
+  loanType: string,
+  documents: Array<{ document_type: string; status: string }>,
+): BorrowerDocumentChecklistItem[] {
+  const latestByType = new Map(documents.map((document) => [document.document_type, document.status]));
+
+  return getRequiredDocumentsForLoanType(loanType).map((documentType) => {
+    const status = latestByType.get(documentType) ?? null;
+
+    return {
+      document_type: documentType,
+      label: getDocumentTypeLabel(documentType),
+      is_complete: status === "accepted" || status === "pending" || status === "under_review",
+      latest_status: status,
+    };
+  });
+}
+
+function getExpiringDocuments(
+  documents: Array<{ id: string; document_type: string; file_name: string; expires_at: string | null }>,
+): BorrowerDocumentExpiryItem[] {
+  const now = Date.now();
+  const warningCutoff = now + 7 * 24 * 60 * 60 * 1000;
+
+  return documents.flatMap((document) => {
+    if (!document.expires_at) {
+      return [];
+    }
+
+    const expiresAt = new Date(document.expires_at).getTime();
+    if (Number.isNaN(expiresAt) || expiresAt > warningCutoff) {
+      return [];
+    }
+
+    return [
+      {
+        id: document.id,
+        document_type: document.document_type,
+        file_name: document.file_name,
+        expires_at: document.expires_at,
+        status: expiresAt < now ? "expired" : "expiring_soon",
+      },
+    ];
+  });
+}
 
 async function getAuthenticatedBorrower() {
   const supabase = await createSupabaseServerClient();
@@ -298,7 +352,9 @@ export async function readBorrowerLoanDetails(
       .order("order_index", { ascending: true }),
     supabase
       .from("documents")
-      .select("id, document_type, status, created_at, file_name")
+      .select(
+        "id, document_type, document_category, status, created_at, file_name, version, is_latest, rejection_reason, expires_at, ai_extracted_data",
+      )
       .eq("loan_application_id", loan.id)
       .is("deleted_at", null)
       .order("created_at", { ascending: false }),
@@ -373,7 +429,10 @@ export async function readBorrowerLoanDetails(
           purchase_price: propertyResult.data.purchase_price,
         }
       : null,
-    documents: documentsResult.data ?? [],
+    documents: (documentsResult.data ?? []).map((document) => ({
+      ...document,
+      ai_extracted_data: parseDocumentExtractionResult(document.ai_extracted_data),
+    })),
     conditions: conditionsResult.data ?? [],
     tasks: tasksResult.data ?? [],
     lastMessages: messageRows.map((message) => ({
@@ -403,22 +462,36 @@ export async function getBorrowerLoanDetails(loanId: string): Promise<BorrowerLo
 
 export async function getBorrowerLoanDocuments(
   loanId: string,
-): Promise<{ loan: BorrowerLoanDetails; documents: BorrowerDocumentListItem[] }> {
+): Promise<BorrowerLoanDocumentWorkspace> {
   const loan = await getBorrowerLoanDetails(loanId);
   const { supabase } = await getAuthenticatedBorrower();
-  const { data, error } = await supabase
-    .from("documents")
-    .select("id, document_type, status, created_at, file_name, storage_path")
-    .eq("loan_application_id", loanId)
-    .is("deleted_at", null)
-    .order("created_at", { ascending: false });
+  const [documentsResult, requestsResult] = await Promise.all([
+    supabase
+      .from("documents")
+      .select(
+        "id, document_type, document_category, status, created_at, file_name, storage_path, version, is_latest, rejection_reason, expires_at, ai_extracted_data, parent_document_id",
+      )
+      .eq("loan_application_id", loanId)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false }),
+    supabase
+      .from("document_requests")
+      .select("id, document_type, message, due_date, status, fulfilled_at")
+      .eq("loan_application_id", loanId)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false }),
+  ]);
 
-  if (error) {
-    throw new Error(error.message);
+  if (documentsResult.error) {
+    throw new Error(documentsResult.error.message);
   }
 
-  const signedUrls = await Promise.all(
-    (data ?? []).map(async (document) => {
+  if (requestsResult.error) {
+    throw new Error(requestsResult.error.message);
+  }
+
+  const documents = await Promise.all(
+    (documentsResult.data ?? []).map(async (document) => {
       const { data: signedData } = await supabase.storage
         .from("documents")
         .createSignedUrl(document.storage_path, 3600);
@@ -426,15 +499,46 @@ export async function getBorrowerLoanDocuments(
       return {
         id: document.id,
         document_type: document.document_type,
+        document_category: document.document_category,
         status: document.status,
         created_at: document.created_at,
         file_name: document.file_name,
+        version: document.version,
+        is_latest: document.is_latest,
+        rejection_reason: document.rejection_reason,
+        expires_at: document.expires_at,
+        ai_extracted_data: parseDocumentExtractionResult(document.ai_extracted_data),
+        parent_document_id: document.parent_document_id,
         signed_url: signedData?.signedUrl ?? null,
-      };
+      } satisfies BorrowerDocumentListItem;
     }),
   );
 
-  return { loan, documents: signedUrls };
+  const latestDocuments = documents.filter((document) => document.is_latest);
+  const checklistItems = getChecklistItems(loan.loan_type, latestDocuments);
+  const completed = checklistItems.filter((item) => item.is_complete).length;
+
+  return {
+    loan,
+    documents,
+    checklist: {
+      completed,
+      total: checklistItems.length,
+      percent: checklistItems.length ? Math.round((completed / checklistItems.length) * 100) : 0,
+      items: checklistItems,
+    },
+    expiringDocuments: getExpiringDocuments(
+      latestDocuments
+        .filter((document) => document.status === "accepted")
+        .map((document) => ({
+          id: document.id,
+          document_type: document.document_type,
+          file_name: document.file_name,
+          expires_at: document.expires_at ?? null,
+        })),
+    ),
+    documentRequests: (requestsResult.data ?? []) as BorrowerDocumentRequestItem[],
+  };
 }
 
 export async function getBorrowerLoanMessages(loanId: string): Promise<{

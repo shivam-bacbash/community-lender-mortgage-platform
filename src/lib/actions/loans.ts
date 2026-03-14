@@ -3,6 +3,11 @@
 import { revalidatePath } from "next/cache";
 
 import { analyzeUnderwriting } from "@/lib/ai/analyses";
+import {
+  parseRiskAssessmentResult,
+  parseUnderwritingSummaryResult,
+} from "@/lib/ai/results";
+import { getDocumentTypeLabel } from "@/lib/documents/config";
 import { getResendClient } from "@/lib/email/resend";
 import {
   completeTaskSchema,
@@ -148,6 +153,8 @@ function revalidateLoanPaths(loanId: string) {
   revalidatePath(`/staff/loans/${loanId}/conditions`);
   revalidatePath(`/staff/loans/${loanId}/tasks`);
   revalidatePath(`/staff/loans/${loanId}/messages`);
+  revalidatePath(`/borrower/loans/${loanId}`);
+  revalidatePath(`/borrower/loans/${loanId}/documents`);
 }
 
 export async function rerunUnderwritingAnalysis(
@@ -231,6 +238,54 @@ export async function submitUWDecision(
       return { data: null, error: "Only underwriters can submit decisions." };
     }
 
+    const [latestRiskAssessment, latestAiSummary, decisionPassResult] = await Promise.all([
+      context.supabase
+        .from("ai_analyses")
+        .select("result")
+        .eq("loan_application_id", loanId)
+        .eq("analysis_type", "risk_assessment")
+        .eq("status", "completed")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      context.supabase
+        .from("ai_analyses")
+        .select("result")
+        .eq("loan_application_id", loanId)
+        .eq("analysis_type", "underwriting_summary")
+        .eq("status", "completed")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      context.supabase
+        .from("underwriting_decisions")
+        .select("decision_pass")
+        .eq("loan_application_id", loanId)
+        .is("deleted_at", null)
+        .order("decision_pass", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    const riskAssessment = latestRiskAssessment.data
+      ? parseRiskAssessmentResult(latestRiskAssessment.data.result)
+      : null;
+
+    if (
+      riskAssessment &&
+      !riskAssessment.eligible_for_approval &&
+      ["approved", "approved_with_conditions"].includes(payload.decision)
+    ) {
+      return {
+        data: null,
+        error: "Automated underwriting found hard-stop failures. Resolve them or use a non-approval decision.",
+      };
+    }
+
+    const aiSummary = latestAiSummary.data
+      ? parseUnderwritingSummaryResult(latestAiSummary.data.result)
+      : null;
+
     const loanWorkspace = await context.supabase
       .from("credit_reports")
       .select("score")
@@ -307,12 +362,14 @@ export async function submitUWDecision(
       loan_application_id: loanId,
       underwriter_id: context.profile.id,
       decision: payload.decision,
+      decision_pass: Number(decisionPassResult.data?.decision_pass ?? 0) + 1,
       approved_amount: payload.approved_amount ?? null,
       notes: payload.notes ?? null,
       denial_reasons: payload.denial_reasons ?? [],
       dti_ratio: dtiRatio,
       ltv_ratio: computedLtv,
       credit_score_used: loanWorkspace.data?.score ?? null,
+      ai_summary: aiSummary ?? {},
     });
 
     if (insertError) {
@@ -449,7 +506,7 @@ export async function reviewDocument(
     const context = await requireStaffContext();
     const { data: document, error: documentError } = await context.supabase
       .from("documents")
-      .select("id, loan_application_id, status, organization_id")
+      .select("id, loan_application_id, status, organization_id, document_type")
       .eq("id", payload.documentId)
       .single();
 
@@ -477,6 +534,31 @@ export async function reviewDocument(
       throw new Error(error.message);
     }
 
+    if (payload.action === "reject") {
+      const { data: fulfilledRequest } = await context.supabase
+        .from("document_requests")
+        .select("id")
+        .eq("loan_application_id", document.loan_application_id)
+        .eq("fulfilled_by_document_id", payload.documentId)
+        .is("deleted_at", null)
+        .maybeSingle();
+
+      if (fulfilledRequest?.id) {
+        const { error: requestError } = await context.supabase
+          .from("document_requests")
+          .update({
+            status: "pending",
+            fulfilled_by_document_id: null,
+            fulfilled_at: null,
+          })
+          .eq("id", fulfilledRequest.id);
+
+        if (requestError) {
+          throw new Error(requestError.message);
+        }
+      }
+    }
+
     await writeAuditLog({
       context,
       action: payload.action === "accept" ? "document.accepted" : "document.rejected",
@@ -487,6 +569,26 @@ export async function reviewDocument(
         status: nextStatus,
         rejection_reason: payload.rejectionReason ?? null,
       },
+    });
+
+    const loan = await getLoanForStaff(document.loan_application_id, context);
+    const notificationTitle =
+      payload.action === "accept" ? "Document accepted" : "Document needs a new version";
+    const notificationBody =
+      payload.action === "accept"
+        ? `${getDocumentTypeLabel(document.document_type)} was accepted by your loan team.`
+        : payload.rejectionReason ??
+          `${getDocumentTypeLabel(document.document_type)} was rejected and needs to be re-uploaded.`;
+
+    await notifyBorrower({
+      context,
+      borrowerId: loan.borrower_id,
+      type: payload.action === "accept" ? "doc_accepted" : "doc_rejected",
+      title: notificationTitle,
+      body: notificationBody,
+      resourceType: "document",
+      resourceId: payload.documentId,
+      actionUrl: `${getAppUrl()}/borrower/loans/${document.loan_application_id}/documents`,
     });
 
     revalidateLoanPaths(document.loan_application_id);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 
 import { submitUWDecision } from "@/lib/actions/loans";
 import { Alert } from "@/components/ui/alert";
@@ -10,13 +10,40 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import type { StaffLoanWorkspace } from "@/types/staff";
 
+function mapRecommendationToDecision(
+  recommendation: "approve" | "approve_with_conditions" | "suspend" | "deny",
+) {
+  switch (recommendation) {
+    case "approve":
+      return "approved" as const;
+    case "approve_with_conditions":
+      return "approved_with_conditions" as const;
+    case "suspend":
+      return "suspended" as const;
+    case "deny":
+      return "denied" as const;
+  }
+}
+
 export function UWDecisionForm({ workspace }: { workspace: StaffLoanWorkspace }) {
+  const latestRiskAssessment =
+    workspace.aiAnalyses.find(
+      (analysis) => analysis.analysis_type === "risk_assessment" && analysis.status === "completed",
+    )?.parsed_risk_assessment ?? null;
+  const recommendedDecision = latestRiskAssessment
+    ? mapRecommendationToDecision(latestRiskAssessment.recommendation)
+    : "approved";
+  const approvalBlocked = latestRiskAssessment ? !latestRiskAssessment.eligible_for_approval : false;
   const [decision, setDecision] = useState<"approved" | "approved_with_conditions" | "suspended" | "denied">("approved");
   const [approvedAmount, setApprovedAmount] = useState(String(workspace.header.loan_amount ?? ""));
   const [notes, setNotes] = useState("");
   const [denialReasons, setDenialReasons] = useState("");
   const [serverError, setServerError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+
+  useEffect(() => {
+    setDecision(recommendedDecision);
+  }, [recommendedDecision]);
 
   return (
     <form
@@ -42,11 +69,22 @@ export function UWDecisionForm({ workspace }: { workspace: StaffLoanWorkspace })
       }}
     >
       {serverError ? <Alert tone="error" message={serverError} /> : null}
+      {latestRiskAssessment ? (
+        <Alert
+          tone={approvalBlocked ? "error" : "info"}
+          title="Automated recommendation"
+          message={
+            approvalBlocked
+              ? `Hard-stop failures found: ${latestRiskAssessment.hard_stop_failures.join(", ")}. Approval choices are disabled.`
+              : `Suggested decision: ${latestRiskAssessment.recommendation.replaceAll("_", " ")}.`
+          }
+        />
+      ) : null}
       <div className="grid gap-4 md:grid-cols-2">
         <Field id="uwDecision" label="Decision" required>
           <Select id="uwDecision" value={decision} onChange={(event) => setDecision(event.target.value as typeof decision)}>
-            <option value="approved">Approved</option>
-            <option value="approved_with_conditions">Approved with conditions</option>
+            <option value="approved" disabled={approvalBlocked}>Approved</option>
+            <option value="approved_with_conditions" disabled={approvalBlocked}>Approved with conditions</option>
             <option value="suspended">Suspended</option>
             <option value="denied">Denied</option>
           </Select>

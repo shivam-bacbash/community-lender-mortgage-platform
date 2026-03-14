@@ -1,5 +1,5 @@
 import type { Json } from "@/types/database";
-import type { PrequalificationResult } from "@/lib/ai/results";
+import type { DocumentExtractionResult, PrequalificationResult } from "@/lib/ai/results";
 
 export interface BorrowerDashboardLoan {
   id: string;
@@ -115,9 +115,15 @@ export interface BorrowerDraftApplication {
 export interface LoanStatusDocument {
   id: string;
   document_type: string;
+  document_category?: string | null;
   status: string;
   created_at: string;
   file_name: string;
+  version?: number;
+  is_latest?: boolean;
+  rejection_reason?: string | null;
+  expires_at?: string | null;
+  ai_extracted_data?: DocumentExtractionResult | null;
 }
 
 export interface LoanCondition {
@@ -186,6 +192,44 @@ export interface BorrowerLoanDetails {
 
 export interface BorrowerDocumentListItem extends LoanStatusDocument {
   signed_url: string | null;
+  parent_document_id?: string | null;
+}
+
+export interface BorrowerDocumentChecklistItem {
+  document_type: string;
+  label: string;
+  is_complete: boolean;
+  latest_status: string | null;
+}
+
+export interface BorrowerDocumentExpiryItem {
+  id: string;
+  document_type: string;
+  file_name: string;
+  expires_at: string;
+  status: "expiring_soon" | "expired";
+}
+
+export interface BorrowerDocumentRequestItem {
+  id: string;
+  document_type: string;
+  message: string | null;
+  due_date: string | null;
+  status: string;
+  fulfilled_at: string | null;
+}
+
+export interface BorrowerLoanDocumentWorkspace {
+  loan: BorrowerLoanDetails;
+  documents: BorrowerDocumentListItem[];
+  checklist: {
+    completed: number;
+    total: number;
+    percent: number;
+    items: BorrowerDocumentChecklistItem[];
+  };
+  expiringDocuments: BorrowerDocumentExpiryItem[];
+  documentRequests: BorrowerDocumentRequestItem[];
 }
 
 export interface BorrowerMessage {

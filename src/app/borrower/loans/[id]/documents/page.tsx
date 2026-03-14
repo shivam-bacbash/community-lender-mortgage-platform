@@ -1,7 +1,7 @@
-import { ExternalLink } from "lucide-react";
-
+import { DocumentChecklist } from "@/components/documents/DocumentChecklist";
+import { DocumentGrid } from "@/components/documents/DocumentGrid";
+import { ExpiryAlert } from "@/components/documents/ExpiryAlert";
 import { DocumentUploadForm } from "@/components/borrower/document-upload-form";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { Card } from "@/components/ui/card";
 import { PageHeader } from "@/components/shared/page-header";
 import { getBorrowerLoanDocuments } from "@/lib/borrower/queries";
@@ -13,50 +13,66 @@ export default async function BorrowerLoanDocumentsPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const { loan, documents } = await getBorrowerLoanDocuments(id);
+  const workspace = await getBorrowerLoanDocuments(id);
 
   return (
     <main id="main-content" className="space-y-6">
       <PageHeader
-        breadcrumbs={["Borrower", "Loans", loan.loan_number ?? "Application", "Documents"]}
+        breadcrumbs={["Borrower", "Loans", workspace.loan.loan_number ?? "Application", "Documents"]}
         title="Documents"
-        subtitle="Upload new files and review what the loan team has already received."
+        subtitle="Upload new files, monitor required items, and replace outdated versions."
       />
 
-      <DocumentUploadForm loanId={id} />
+      <ExpiryAlert items={workspace.expiringDocuments} />
+
+      <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+        <DocumentUploadForm loanId={id} />
+        <DocumentChecklist summary={workspace.checklist} items={workspace.checklist.items} />
+      </div>
 
       <Card className="p-6">
-        <div className="space-y-4">
-          {documents.length ? (
-            documents.map((document) => (
-              <div key={document.id} className="flex flex-col gap-3 rounded-2xl border border-gray-200 p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-gray-900">{document.file_name}</p>
-                  <p className="mt-1 text-sm text-gray-600">
-                    {document.document_type.replaceAll("_", " ")} • uploaded {formatDate(document.created_at)}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <StatusBadge status={document.status} />
-                  {document.signed_url ? (
-                    <a
-                      href={document.signed_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-2 text-sm font-semibold text-primary-700"
-                    >
-                      View
-                      <ExternalLink className="h-4 w-4" aria-hidden="true" />
-                    </a>
-                  ) : null}
-                </div>
+        <h2 className="text-lg font-semibold text-gray-900">Open requests</h2>
+        <div className="mt-4 space-y-3">
+          {workspace.documentRequests.length ? (
+            workspace.documentRequests.map((request) => (
+              <div
+                key={request.id}
+                className="rounded-2xl border border-gray-200 px-4 py-3"
+              >
+                <p className="text-sm font-semibold text-gray-900">
+                  {request.document_type.replaceAll("_", " ")}
+                </p>
+                <p className="mt-1 text-sm text-gray-600">
+                  {request.message ?? "The loan team requested this document."}
+                </p>
+                <p className="mt-2 text-xs text-gray-500">
+                  {request.due_date ? `Due ${formatDate(request.due_date)}` : "No due date"}
+                  {request.fulfilled_at ? ` • uploaded ${formatDate(request.fulfilled_at)}` : ""}
+                </p>
               </div>
             ))
           ) : (
-            <p className="text-sm text-gray-600">No documents uploaded yet.</p>
+            <p className="text-sm text-gray-600">No outstanding document requests.</p>
           )}
         </div>
       </Card>
+
+      <DocumentGrid
+        documents={workspace.documents.map((document) => ({
+          id: document.id,
+          title: document.file_name,
+          documentType: document.document_type,
+          category: document.document_category ?? "borrower",
+          createdAt: document.created_at,
+          status: document.status,
+          subtitle: document.rejection_reason ?? null,
+          version: document.version ?? 1,
+          expiresAt: document.expires_at ?? null,
+          previewUrl: document.signed_url,
+          extractionConfidence: document.ai_extracted_data?.confidence ?? null,
+        }))}
+        emptyMessage="No documents uploaded yet."
+      />
     </main>
   );
 }

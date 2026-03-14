@@ -37,6 +37,44 @@ export interface ComplianceCheckResult {
   fair_lending_notes: string;
 }
 
+export interface DocumentExtractionResult {
+  detected_type: string;
+  confidence: number;
+  extracted_fields: {
+    borrower_name: string | null;
+    date: string | null;
+    employer_name: string | null;
+    income_amount: number | null;
+    period: string | null;
+  };
+  anomalies: string[];
+}
+
+export interface RiskAssessmentResult {
+  loan_id: string;
+  loan_type: string;
+  recommendation: "approve" | "approve_with_conditions" | "suspend" | "deny";
+  eligible_for_approval: boolean;
+  hard_stop_failures: string[];
+  advisory_failures: string[];
+  values: {
+    dti: number | null;
+    ltv: number | null;
+    cltv: number | null;
+    credit_score: number | null;
+    months_reserves: number | null;
+    loan_amount: number | null;
+  };
+  results: Array<{
+    rule_name: string;
+    passed: boolean;
+    actual_value: number | string | null;
+    threshold: string;
+    severity: "hard_stop" | "advisory";
+    description: string | null;
+  }>;
+}
+
 function isRecord(value: Json): value is Record<string, Json> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -171,5 +209,109 @@ export function parseComplianceCheckResult(result: Json): ComplianceCheckResult 
     issues: issues as ComplianceCheckResult["issues"],
     trid_concerns: result.trid_concerns,
     fair_lending_notes: result.fair_lending_notes,
+  };
+}
+
+export function parseDocumentExtractionResult(result: Json): DocumentExtractionResult | null {
+  if (!isRecord(result)) {
+    return null;
+  }
+
+  if (
+    typeof result.detected_type !== "string" ||
+    typeof result.confidence !== "number" ||
+    !isRecord(result.extracted_fields) ||
+    !isStringArray(result.anomalies)
+  ) {
+    return null;
+  }
+
+  const extractedFields = result.extracted_fields;
+  const stringOrNull = (value: Json | undefined) => value === null || typeof value === "string";
+  const numberOrNull = (value: Json | undefined) => value === null || typeof value === "number";
+
+  if (
+    !stringOrNull(extractedFields.borrower_name) ||
+    !stringOrNull(extractedFields.date) ||
+    !stringOrNull(extractedFields.employer_name) ||
+    !numberOrNull(extractedFields.income_amount) ||
+    !stringOrNull(extractedFields.period)
+  ) {
+    return null;
+  }
+
+  return {
+    detected_type: result.detected_type,
+    confidence: result.confidence,
+    extracted_fields: {
+      borrower_name: extractedFields.borrower_name as string | null,
+      date: extractedFields.date as string | null,
+      employer_name: extractedFields.employer_name as string | null,
+      income_amount: extractedFields.income_amount as number | null,
+      period: extractedFields.period as string | null,
+    },
+    anomalies: result.anomalies,
+  };
+}
+
+export function parseRiskAssessmentResult(result: Json): RiskAssessmentResult | null {
+  if (!isRecord(result)) {
+    return null;
+  }
+
+  if (
+    typeof result.loan_id !== "string" ||
+    typeof result.loan_type !== "string" ||
+    typeof result.recommendation !== "string" ||
+    typeof result.eligible_for_approval !== "boolean" ||
+    !isStringArray(result.hard_stop_failures) ||
+    !isStringArray(result.advisory_failures) ||
+    !isRecord(result.values) ||
+    !Array.isArray(result.results)
+  ) {
+    return null;
+  }
+
+  const values = result.values;
+  const results = result.results;
+
+  if (
+    !["approve", "approve_with_conditions", "suspend", "deny"].includes(result.recommendation) ||
+    ![values.dti, values.ltv, values.cltv, values.credit_score, values.months_reserves, values.loan_amount].every(
+      (value) => value === null || typeof value === "number",
+    ) ||
+    !results.every(
+      (item) =>
+        item &&
+        typeof item === "object" &&
+        !Array.isArray(item) &&
+        typeof item.rule_name === "string" &&
+        typeof item.passed === "boolean" &&
+        (item.actual_value === null || typeof item.actual_value === "number" || typeof item.actual_value === "string") &&
+        typeof item.threshold === "string" &&
+        typeof item.severity === "string" &&
+        (item.description === null || typeof item.description === "string") &&
+        ["hard_stop", "advisory"].includes(item.severity),
+    )
+  ) {
+    return null;
+  }
+
+  return {
+    loan_id: result.loan_id,
+    loan_type: result.loan_type,
+    recommendation: result.recommendation as RiskAssessmentResult["recommendation"],
+    eligible_for_approval: result.eligible_for_approval,
+    hard_stop_failures: result.hard_stop_failures,
+    advisory_failures: result.advisory_failures,
+    values: {
+      dti: values.dti as number | null,
+      ltv: values.ltv as number | null,
+      cltv: values.cltv as number | null,
+      credit_score: values.credit_score as number | null,
+      months_reserves: values.months_reserves as number | null,
+      loan_amount: values.loan_amount as number | null,
+    },
+    results: results as RiskAssessmentResult["results"],
   };
 }
