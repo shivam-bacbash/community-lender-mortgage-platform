@@ -1,4 +1,5 @@
 import type { Json } from "@/types/database";
+import type { MessageThreadItem } from "@/types/communications";
 import type { Role } from "@/types/auth";
 import type {
   DocumentExtractionResult,
@@ -206,15 +207,7 @@ export interface StaffLoanTask {
   assigned_to_name: string | null;
 }
 
-export interface StaffLoanMessage {
-  id: string;
-  body: string;
-  created_at: string;
-  sender_id: string;
-  sender_name: string;
-  sender_role: string;
-  is_internal: boolean;
-}
+export type StaffLoanMessage = MessageThreadItem;
 
 export interface StaffUnderwritingDecision {
   id: string;
@@ -232,6 +225,7 @@ export interface StaffUnderwritingDecision {
 }
 
 export interface StaffLoanWorkspace {
+  currentStaffId: string;
   header: StaffLoanHeader;
   stage: PipelineStageSummary | null;
   stages: PipelineStageSummary[];

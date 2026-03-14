@@ -1,8 +1,10 @@
 import { redirect } from "next/navigation";
 
+import { ensureDefaultEmailTemplates } from "@/lib/notifications/templates";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { ensureDefaultUnderwritingRules } from "@/lib/underwriting/engine";
 import type { UnderwritingRuleRecord } from "@/types/admin";
+import type { EmailTemplateRecord } from "@/types/communications";
 
 async function requireAdminContext() {
   const supabase = await createSupabaseServerClient();
@@ -48,5 +50,31 @@ export async function getAdminUnderwritingSettings() {
   return {
     profile,
     rules: (data ?? []) as UnderwritingRuleRecord[],
+  };
+}
+
+export async function getAdminEmailTemplates() {
+  const { supabase, profile } = await requireAdminContext();
+  await ensureDefaultEmailTemplates(profile.organization_id);
+
+  const { data, error } = await supabase
+    .from("email_templates")
+    .select(
+      "id, organization_id, trigger_event, subject, body_html, body_text, reply_to, variables, is_active, is_default, updated_at",
+    )
+    .eq("organization_id", profile.organization_id)
+    .is("deleted_at", null)
+    .order("trigger_event", { ascending: true });
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return {
+    profile,
+    templates: (data ?? []).map((template) => ({
+      ...template,
+      variables: Array.isArray(template.variables) ? template.variables : [],
+    })) as EmailTemplateRecord[],
   };
 }

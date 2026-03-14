@@ -568,7 +568,7 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
       .order("due_date", { ascending: true }),
     supabase
       .from("messages")
-      .select("id, body, created_at, sender_id, is_internal")
+      .select("id, body, created_at, sender_id, is_internal, channel, attachment_ids")
       .eq("loan_application_id", loanId)
       .is("deleted_at", null)
       .order("created_at", { ascending: true }),
@@ -682,6 +682,7 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
   const documentChecklistCompleted = documentChecklist.filter((item) => item.is_complete).length;
 
   return {
+    currentStaffId: profile.id,
     header: {
       id: loan.id,
       organization_id: loan.organization_id,
@@ -751,7 +752,23 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
       sender_id: message.sender_id,
       sender_name: assigneeMap.get(message.sender_id)?.name ?? "Unknown user",
       sender_role: assigneeMap.get(message.sender_id)?.role ?? "staff",
+      channel: message.channel,
       is_internal: message.is_internal,
+      attachment_ids: message.attachment_ids ?? [],
+      attachments: (message.attachment_ids ?? []).flatMap((attachmentId: string) => {
+        const document = documents.find((item) => item.id === attachmentId);
+
+        return document
+          ? [
+              {
+                id: document.id,
+                file_name: document.file_name,
+                document_type: document.document_type,
+                href: `/staff/loans/${loanId}/documents/${document.id}`,
+              },
+            ]
+          : [];
+      }),
     })),
     underwritingDecisions: (underwritingData.data ?? []).map((decision) => ({
       id: decision.id,

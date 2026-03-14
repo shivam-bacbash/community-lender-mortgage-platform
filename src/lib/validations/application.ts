@@ -145,6 +145,7 @@ export const documentUploadSchema = z.object({
 export const messageSchema = z.object({
   loanId: z.string().uuid(),
   body: z.string().min(1).max(4000),
+  attachmentIds: z.array(z.string().uuid()).max(5).optional(),
 });
 
 export const fullApplicationSchema = step1Schema

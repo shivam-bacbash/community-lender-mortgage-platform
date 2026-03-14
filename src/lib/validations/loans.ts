@@ -79,6 +79,7 @@ export const staffMessageSchema = z.object({
   loanId: z.string().uuid(),
   body: z.string().min(1).max(4000),
   isInternal: z.boolean().default(false),
+  attachmentIds: z.array(z.string().uuid()).max(5).optional(),
 });
 
 export type UnderwritingDecisionInput = z.infer<typeof underwritingDecisionSchema>;

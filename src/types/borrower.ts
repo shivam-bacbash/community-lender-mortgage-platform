@@ -1,3 +1,4 @@
+import type { MessageThreadItem } from "@/types/communications";
 import type { Json } from "@/types/database";
 import type { DocumentExtractionResult, PrequalificationResult } from "@/lib/ai/results";
 
@@ -232,12 +233,4 @@ export interface BorrowerLoanDocumentWorkspace {
   documentRequests: BorrowerDocumentRequestItem[];
 }
 
-export interface BorrowerMessage {
-  id: string;
-  body: string;
-  created_at: string;
-  sender_id: string;
-  sender_name: string;
-  sender_role: string;
-  channel: string;
-}
+export type BorrowerMessage = MessageThreadItem;

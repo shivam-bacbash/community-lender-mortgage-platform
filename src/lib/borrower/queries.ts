@@ -18,6 +18,7 @@ import type {
   BorrowerLoanDetails,
   BorrowerMessage,
 } from "@/types/borrower";
+import type { MessageAttachment } from "@/types/communications";
 import type { Profile } from "@/types/auth";
 
 type MessageRow = {
@@ -26,6 +27,8 @@ type MessageRow = {
   created_at: string;
   sender_id: string;
   channel: string;
+  is_internal: boolean;
+  attachment_ids: string[] | null;
 };
 
 function getChecklistItems(
@@ -544,12 +547,14 @@ export async function getBorrowerLoanDocuments(
 export async function getBorrowerLoanMessages(loanId: string): Promise<{
   loan: BorrowerLoanDetails;
   messages: BorrowerMessage[];
+  attachmentOptions: MessageAttachment[];
+  borrowerId: string;
 }> {
   const loan = await getBorrowerLoanDetails(loanId);
-  const { supabase } = await getAuthenticatedBorrower();
+  const { supabase, profile } = await getAuthenticatedBorrower();
   const { data, error } = await supabase
     .from("messages")
-    .select("id, body, created_at, sender_id, channel")
+    .select("id, body, created_at, sender_id, channel, is_internal, attachment_ids")
     .eq("loan_application_id", loanId)
     .eq("is_internal", false)
     .is("deleted_at", null)
@@ -573,7 +578,33 @@ export async function getBorrowerLoanMessages(loanId: string): Promise<{
     sender_name: profileMap.get(message.sender_id)?.name ?? "Loan team",
     sender_role: profileMap.get(message.sender_id)?.role ?? "staff",
     channel: message.channel,
+    is_internal: false,
+    attachment_ids: message.attachment_ids ?? [],
+    attachments: (message.attachment_ids ?? []).flatMap((attachmentId: string) => {
+      const document = loan.documents.find((item) => item.id === attachmentId);
+
+      return document
+        ? [
+            {
+              id: document.id,
+              file_name: document.file_name,
+              document_type: document.document_type,
+              href: `/borrower/loans/${loanId}/documents`,
+            },
+          ]
+        : [];
+    }),
   }));
 
-  return { loan, messages };
+  return {
+    loan,
+    messages,
+    attachmentOptions: loan.documents.map((document) => ({
+      id: document.id,
+      file_name: document.file_name,
+      document_type: document.document_type,
+      href: `/borrower/loans/${loanId}/documents`,
+    })),
+    borrowerId: profile.id,
+  };
 }

@@ -8,7 +8,7 @@ import {
   parseUnderwritingSummaryResult,
 } from "@/lib/ai/results";
 import { getDocumentTypeLabel } from "@/lib/documents/config";
-import { getResendClient } from "@/lib/email/resend";
+import { createNotification } from "@/lib/notifications/service";
 import {
   completeTaskSchema,
   conditionSchema,
@@ -28,12 +28,12 @@ import {
 } from "@/lib/validations/loans";
 import {
   getAppUrl,
-  getResendFromEmail,
 } from "@/lib/supabase/env";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isStaffRole } from "@/lib/auth/roles";
 import type { ActionResult } from "@/types/auth";
+import type { MessageThreadItem } from "@/types/communications";
 
 type StaffContext = {
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
@@ -48,6 +48,53 @@ type StaffContext = {
 
 function getAdminClient() {
   return createSupabaseAdminClient();
+}
+
+async function getProfileDisplayName(profileId: string) {
+  const { data, error } = await getAdminClient()
+    .from("profiles")
+    .select("first_name, last_name")
+    .eq("id", profileId)
+    .maybeSingle();
+
+  if (error || !data) {
+    return null;
+  }
+
+  return `${data.first_name} ${data.last_name}`.trim();
+}
+
+async function getMessageAttachments(loanId: string, attachmentIds: string[]) {
+  if (!attachmentIds.length) {
+    return [];
+  }
+
+  const { data, error } = await getAdminClient()
+    .from("documents")
+    .select("id, file_name, document_type")
+    .eq("loan_application_id", loanId)
+    .in("id", attachmentIds)
+    .is("deleted_at", null);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const attachmentMap = new Map((data ?? []).map((document) => [document.id, document]));
+  return attachmentIds.flatMap((attachmentId) => {
+    const attachment = attachmentMap.get(attachmentId);
+
+    return attachment
+      ? [
+          {
+            id: attachment.id,
+            file_name: attachment.file_name,
+            document_type: attachment.document_type,
+            href: `/staff/loans/${loanId}/documents/${attachment.id}`,
+          },
+        ]
+      : [];
+  });
 }
 
 async function requireStaffContext(): Promise<StaffContext> {
@@ -122,20 +169,21 @@ async function notifyBorrower(params: {
   resourceType: "loan" | "task" | "document" | "message" | "condition";
   resourceId: string;
   actionUrl: string;
+  emailTriggerEvent?: string;
+  emailVariables?: Record<string, string | number | null | undefined>;
 }) {
   const { context, borrowerId, ...notification } = params;
-  const admin = getAdminClient();
-
-  await admin.from("notifications").insert({
-    organization_id: context.profile.organization_id,
-    recipient_id: borrowerId,
+  await createNotification({
+    organizationId: context.profile.organization_id,
+    recipientId: borrowerId,
     type: notification.type,
     title: notification.title,
     body: notification.body,
-    resource_type: notification.resourceType,
-    resource_id: notification.resourceId,
-    action_url: notification.actionUrl,
-    sent_via: ["in_app"],
+    resourceType: notification.resourceType,
+    resourceId: notification.resourceId,
+    actionUrl: notification.actionUrl,
+    emailTriggerEvent: notification.emailTriggerEvent,
+    emailVariables: notification.emailVariables,
   });
 }
 
@@ -233,6 +281,7 @@ export async function submitUWDecision(
     const payload = underwritingDecisionSchema.parse(values);
     const context = await requireStaffContext();
     const loan = await getLoanForStaff(loanId, context);
+    const borrowerName = (await getProfileDisplayName(loan.borrower_id)) ?? "borrower";
 
     if (!["underwriter", "admin"].includes(context.profile.role)) {
       return { data: null, error: "Only underwriters can submit decisions." };
@@ -418,22 +467,15 @@ export async function submitUWDecision(
       resourceType: "loan",
       resourceId: loanId,
       actionUrl: `${getAppUrl()}/borrower/loans/${loanId}`,
+      emailTriggerEvent: payload.decision === "denied" ? "loan_denied" : "loan_approved",
+      emailVariables: {
+        borrower_name: borrowerName,
+        loan_number: loan.loan_number ?? loanId,
+        loan_amount: payload.approved_amount ?? loan.loan_amount ?? "",
+        loan_status: payload.decision.replaceAll("_", " "),
+        portal_url: `${getAppUrl()}/borrower/loans/${loanId}`,
+      },
     });
-
-    if (payload.decision === "approved" && process.env.RESEND_API_KEY) {
-      const borrowerUser = await getAdminClient().auth.admin.getUserById(loan.borrower_id);
-      const email = borrowerUser.data.user?.email;
-
-      if (email) {
-        const resend = getResendClient();
-        await resend.emails.send({
-          from: getResendFromEmail(),
-          to: email,
-          subject: `Loan ${loan.loan_number ?? ""} approved`,
-          html: `<p>Your loan has been approved. Review the latest status in the borrower portal.</p>`,
-        });
-      }
-    }
 
     revalidateLoanPaths(loanId);
 
@@ -451,6 +493,7 @@ export async function requestDocument(
     const payload = documentRequestSchema.parse({ ...values, loanId });
     const context = await requireStaffContext();
     const loan = await getLoanForStaff(payload.loanId, context);
+    const borrowerName = (await getProfileDisplayName(loan.borrower_id)) ?? "borrower";
 
     if (!["loan_officer", "processor", "underwriter"].includes(context.profile.role)) {
       return { data: null, error: "This role cannot request borrower documents." };
@@ -488,6 +531,14 @@ export async function requestDocument(
       resourceType: "loan",
       resourceId: payload.loanId,
       actionUrl: `${getAppUrl()}/borrower/loans/${payload.loanId}/documents`,
+      emailTriggerEvent: "document_requested",
+      emailVariables: {
+        borrower_name: borrowerName,
+        loan_number: loan.loan_number ?? payload.loanId,
+        document_type: getDocumentTypeLabel(payload.documentType),
+        request_message: payload.message ?? "",
+        portal_url: `${getAppUrl()}/borrower/loans/${payload.loanId}/documents`,
+      },
     });
 
     revalidateLoanPaths(payload.loanId);
@@ -572,6 +623,7 @@ export async function reviewDocument(
     });
 
     const loan = await getLoanForStaff(document.loan_application_id, context);
+    const borrowerName = (await getProfileDisplayName(loan.borrower_id)) ?? "borrower";
     const notificationTitle =
       payload.action === "accept" ? "Document accepted" : "Document needs a new version";
     const notificationBody =
@@ -589,6 +641,16 @@ export async function reviewDocument(
       resourceType: "document",
       resourceId: payload.documentId,
       actionUrl: `${getAppUrl()}/borrower/loans/${document.loan_application_id}/documents`,
+      emailTriggerEvent: payload.action === "accept" ? "document_accepted" : undefined,
+      emailVariables:
+        payload.action === "accept"
+          ? {
+              borrower_name: borrowerName,
+              loan_number: loan.loan_number ?? document.loan_application_id,
+              document_type: getDocumentTypeLabel(document.document_type),
+              portal_url: `${getAppUrl()}/borrower/loans/${document.loan_application_id}/documents`,
+            }
+          : undefined,
     });
 
     revalidateLoanPaths(document.loan_application_id);
@@ -606,6 +668,7 @@ export async function addCondition(
     const payload = conditionSchema.parse(values);
     const context = await requireStaffContext();
     const loan = await getLoanForStaff(payload.loanId, context);
+    const borrowerName = (await getProfileDisplayName(loan.borrower_id)) ?? "borrower";
 
     if (!["loan_officer", "processor", "underwriter"].includes(context.profile.role)) {
       return { data: null, error: "This role cannot add loan conditions." };
@@ -644,6 +707,13 @@ export async function addCondition(
       resourceType: "condition",
       resourceId: payload.loanId,
       actionUrl: `${getAppUrl()}/borrower/loans/${payload.loanId}`,
+      emailTriggerEvent: "condition_added",
+      emailVariables: {
+        borrower_name: borrowerName,
+        loan_number: loan.loan_number ?? payload.loanId,
+        condition_description: payload.description,
+        portal_url: `${getAppUrl()}/borrower/loans/${payload.loanId}`,
+      },
     });
 
     revalidateLoanPaths(payload.loanId);
@@ -722,6 +792,9 @@ export async function createTask(values: TaskInput): Promise<ActionResult<void>>
     const payload = taskSchema.parse(values);
     const context = await requireStaffContext();
     const loan = await getLoanForStaff(payload.loanId, context);
+    const assigneeName = payload.assigned_to
+      ? (await getProfileDisplayName(payload.assigned_to)) ?? "team member"
+      : "team member";
 
     const { data: task, error } = await context.supabase
       .from("tasks")
@@ -754,16 +827,22 @@ export async function createTask(values: TaskInput): Promise<ActionResult<void>>
     });
 
     if (payload.assigned_to) {
-      await getAdminClient().from("notifications").insert({
-        organization_id: context.profile.organization_id,
-        recipient_id: payload.assigned_to,
+      await createNotification({
+        organizationId: context.profile.organization_id,
+        recipientId: payload.assigned_to,
         type: "task_assigned",
         title: "Task assigned",
         body: payload.title,
-        resource_type: "task",
-        resource_id: task.id,
-        action_url: `${getAppUrl()}/staff/loans/${payload.loanId}/tasks`,
-        sent_via: ["in_app"],
+        resourceType: "task",
+        resourceId: task.id,
+        actionUrl: `${getAppUrl()}/staff/loans/${payload.loanId}/tasks`,
+        emailTriggerEvent: "task_assigned",
+        emailVariables: {
+          assignee_name: assigneeName,
+          loan_number: loan.loan_number ?? payload.loanId,
+          task_title: payload.title,
+          portal_url: `${getAppUrl()}/staff/loans/${payload.loanId}/tasks`,
+        },
       });
     }
 
@@ -834,7 +913,7 @@ export async function completeTask(taskId: string): Promise<ActionResult<void>> 
 
 export async function sendStaffMessage(
   values: StaffMessageInput,
-): Promise<ActionResult<void>> {
+): Promise<ActionResult<{ message: MessageThreadItem }>> {
   try {
     const payload = staffMessageSchema.parse(values);
     const context = await requireStaffContext();
@@ -848,8 +927,9 @@ export async function sendStaffMessage(
         body: payload.body,
         is_internal: payload.isInternal,
         channel: "in_app",
+        attachment_ids: payload.attachmentIds ?? [],
       })
-      .select("id")
+      .select("id, created_at")
       .single();
 
     if (error || !message) {
@@ -877,9 +957,27 @@ export async function sendStaffMessage(
       });
     }
 
+    const attachments = await getMessageAttachments(payload.loanId, payload.attachmentIds ?? []);
+
     revalidateLoanPaths(payload.loanId);
 
-    return { data: undefined, error: null };
+    return {
+      data: {
+        message: {
+          id: message.id,
+          body: payload.body,
+          created_at: message.created_at,
+          sender_id: context.profile.id,
+          sender_name: "You",
+          sender_role: context.profile.role,
+          channel: "in_app",
+          is_internal: payload.isInternal,
+          attachment_ids: payload.attachmentIds ?? [],
+          attachments,
+        },
+      },
+      error: null,
+    };
   } catch (error) {
     return { data: null, error: normalizeError(error) };
   }

@@ -4,6 +4,7 @@ import { Building2, CircleUserRound, FilePlus2 } from "lucide-react";
 
 import { SignOutButton } from "@/components/auth/sign-out-button";
 import { BorrowerNav } from "@/components/borrower/borrower-nav";
+import { NotificationBell } from "@/components/shared/notification-bell";
 import { cn } from "@/lib/utils/cn";
 import type { Profile } from "@/types/auth";
 
@@ -19,15 +20,18 @@ export function BorrowerShell({
       <div className="mx-auto flex min-h-screen max-w-7xl flex-col lg:flex-row">
         <aside className="border-b border-gray-200 bg-white lg:min-h-screen lg:w-72 lg:border-b-0 lg:border-r">
           <div className="flex h-full flex-col p-5">
-            <Link href="/borrower/dashboard" className="flex items-center gap-3 rounded-xl px-3 py-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary-600 text-white">
-                <Building2 className="h-5 w-5" aria-hidden="true" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-gray-900">NexusLend</p>
-                <p className="text-xs text-gray-500">Borrower portal</p>
-              </div>
-            </Link>
+            <div className="flex items-center justify-between gap-3">
+              <Link href="/borrower/dashboard" className="flex items-center gap-3 rounded-xl px-3 py-3">
+                <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary-600 text-white">
+                  <Building2 className="h-5 w-5" aria-hidden="true" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-gray-900">NexusLend</p>
+                  <p className="text-xs text-gray-500">Borrower portal</p>
+                </div>
+              </Link>
+              <NotificationBell userId={profile.id} />
+            </div>
 
             <div className="mt-6 rounded-2xl border border-gray-200 bg-gray-25 p-4">
               <div className="flex items-start gap-3">

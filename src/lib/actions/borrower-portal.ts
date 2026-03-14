@@ -11,7 +11,7 @@ import {
   getDocumentExpiryDays,
   type DocumentType,
 } from "@/lib/documents/config";
-import { getResendClient } from "@/lib/email/resend";
+import { createNotification, sendTemplatedEmail } from "@/lib/notifications/service";
 import { applyDefaultFees } from "@/lib/pricing/calculator";
 import {
   documentUploadSchema,
@@ -34,11 +34,11 @@ import {
 import {
   getAppSecretKey,
   getAppUrl,
-  getResendFromEmail,
 } from "@/lib/supabase/env";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { ActionResult, Profile } from "@/types/auth";
+import type { MessageThreadItem } from "@/types/communications";
 
 async function requireBorrowerContext() {
   const supabase = await createSupabaseServerClient();
@@ -71,7 +71,7 @@ async function getOwnedLoan(
 ) {
   const { data, error } = await supabase
     .from("loan_applications")
-    .select("id, organization_id, borrower_id, co_borrower_id, status, loan_number, loan_type")
+    .select("id, organization_id, borrower_id, co_borrower_id, status, loan_number, loan_type, loan_officer_id")
     .eq("id", loanId)
     .or(`borrower_id.eq.${profileId},co_borrower_id.eq.${profileId}`)
     .is("deleted_at", null)
@@ -115,6 +115,43 @@ async function getOrCreateBorrowerProfileId(
 
 function normalizeStepError(error: unknown) {
   return error instanceof Error ? error.message : "Something went wrong. Try again.";
+}
+
+async function getMessageAttachments(
+  loanId: string,
+  attachmentIds: string[],
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+) {
+  if (!attachmentIds.length) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("documents")
+    .select("id, file_name, document_type")
+    .eq("loan_application_id", loanId)
+    .in("id", attachmentIds)
+    .is("deleted_at", null);
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const attachmentMap = new Map((data ?? []).map((document) => [document.id, document]));
+  return attachmentIds.flatMap((attachmentId) => {
+    const attachment = attachmentMap.get(attachmentId);
+
+    return attachment
+      ? [
+          {
+            id: attachment.id,
+            file_name: attachment.file_name,
+            document_type: attachment.document_type,
+            href: `/borrower/loans/${loanId}/documents`,
+          },
+        ]
+      : [];
+  });
 }
 
 export async function saveLoanStep1(
@@ -477,7 +514,7 @@ export async function submitBorrowerApplication(
   applicationId: string,
 ): Promise<ActionResult<{ loanId: string; redirectTo: string }>> {
   try {
-    const { supabase, profile, user } = await requireBorrowerContext();
+    const { supabase, profile } = await requireBorrowerContext();
     const loan = await getOwnedLoan(applicationId, profile.id, supabase);
 
     if (loan.status !== "draft") {
@@ -509,16 +546,36 @@ export async function submitBorrowerApplication(
       }
 
       try {
-        if (process.env.RESEND_API_KEY) {
-          const resend = getResendClient();
-          await resend.emails.send({
-            from: getResendFromEmail(),
-            to: user.email ?? getResendFromEmail(),
-            subject: `Application ${loan.loan_number ?? applicationId} submitted`,
-            html: `
-              <p>Your mortgage application has been submitted.</p>
-              <p>Track progress at <a href="${getAppUrl()}/borrower/loans/${applicationId}">${getAppUrl()}/borrower/loans/${applicationId}</a></p>
-            `,
+        const borrowerPortalUrl = `${getAppUrl()}/borrower/loans/${applicationId}`;
+        await createNotification({
+          organizationId: loan.organization_id,
+          recipientId: profile.id,
+          type: "application_submitted",
+          title: "Application submitted",
+          body: `We received application ${loan.loan_number ?? applicationId}.`,
+          actionUrl: borrowerPortalUrl,
+          resourceType: "loan",
+          resourceId: applicationId,
+          emailTriggerEvent: "application_submitted",
+          emailVariables: {
+            borrower_name: `${profile.first_name} ${profile.last_name}`.trim(),
+            loan_number: loan.loan_number ?? applicationId,
+            lo_name: "your loan officer",
+            portal_url: borrowerPortalUrl,
+          },
+        });
+
+        if (loan.loan_officer_id) {
+          await sendTemplatedEmail({
+            organizationId: loan.organization_id,
+            recipientId: loan.loan_officer_id,
+            triggerEvent: "application_submitted",
+            variables: {
+              borrower_name: `${profile.first_name} ${profile.last_name}`.trim(),
+              loan_number: loan.loan_number ?? applicationId,
+              lo_name: "loan officer",
+              portal_url: `${getAppUrl()}/staff/loans/${applicationId}`,
+            },
           });
         }
       } catch {
@@ -721,11 +778,11 @@ export async function uploadBorrowerDocument(
 
 export async function sendBorrowerMessage(
   values: MessageInput,
-): Promise<ActionResult<{ messageId: string }>> {
+): Promise<ActionResult<{ message: MessageThreadItem }>> {
   try {
     const parsed = messageSchema.parse(values);
     const { supabase, profile } = await requireBorrowerContext();
-    await getOwnedLoan(parsed.loanId, profile.id, supabase);
+    const loan = await getOwnedLoan(parsed.loanId, profile.id, supabase);
 
     const { data, error } = await supabase
       .from("messages")
@@ -735,19 +792,63 @@ export async function sendBorrowerMessage(
         body: parsed.body,
         is_internal: false,
         channel: "in_app",
+        attachment_ids: parsed.attachmentIds ?? [],
       })
-      .select("id")
+      .select("id, created_at")
       .single();
 
     if (error || !data) {
       throw new Error(error?.message ?? "Unable to send the message.");
     }
 
+    const admin = createSupabaseAdminClient();
+    const { data: staffRecipients, error: recipientsError } = await admin
+      .from("profiles")
+      .select("id")
+      .eq("organization_id", loan.organization_id)
+      .in("role", ["loan_officer", "processor", "underwriter", "admin"])
+      .eq("is_active", true)
+      .is("deleted_at", null);
+
+    if (recipientsError) {
+      throw new Error(recipientsError.message);
+    }
+
+    await Promise.all(
+      (staffRecipients ?? []).map((recipient) =>
+        createNotification({
+          organizationId: loan.organization_id,
+          recipientId: recipient.id,
+          type: "message_received",
+          title: "New borrower message",
+          body: parsed.body,
+          actionUrl: `${getAppUrl()}/staff/loans/${parsed.loanId}/messages`,
+          resourceType: "message",
+          resourceId: data.id,
+        }),
+      ),
+    );
+
+    const attachments = await getMessageAttachments(parsed.loanId, parsed.attachmentIds ?? [], supabase);
+
     revalidatePath(`/borrower/loans/${parsed.loanId}`);
     revalidatePath(`/borrower/loans/${parsed.loanId}/messages`);
 
     return {
-      data: { messageId: data.id },
+      data: {
+        message: {
+          id: data.id,
+          body: parsed.body,
+          created_at: data.created_at,
+          sender_id: profile.id,
+          sender_name: "You",
+          sender_role: profile.role,
+          channel: "in_app",
+          is_internal: false,
+          attachment_ids: parsed.attachmentIds ?? [],
+          attachments,
+        },
+      },
       error: null,
     };
   } catch (error) {
