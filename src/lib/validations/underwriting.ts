@@ -1,9 +1,10 @@
 import { z } from "zod";
 
 import { UNDERWRITING_LOAN_TYPES } from "@/lib/underwriting/constants";
+import { pgUuidSchema } from "@/lib/validations/shared";
 
 export const underwritingRuleSchema = z.object({
-  id: z.string().uuid().optional(),
+  id: pgUuidSchema.optional(),
   loan_type: z.enum(UNDERWRITING_LOAN_TYPES),
   rule_name: z.string().min(1).max(100),
   min: z.number().optional(),
@@ -14,11 +15,11 @@ export const underwritingRuleSchema = z.object({
 });
 
 export const runAutomatedUnderwritingSchema = z.object({
-  loanId: z.string().uuid(),
+  loanId: pgUuidSchema,
 });
 
 export const pullCreditReportSchema = z.object({
-  loanId: z.string().uuid(),
+  loanId: pgUuidSchema,
 });
 
 export type UnderwritingRuleInput = z.infer<typeof underwritingRuleSchema>;

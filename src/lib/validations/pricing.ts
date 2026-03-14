@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { pgUuidSchema } from "@/lib/validations/shared";
 
 export const pricingProductSchema = z.object({
-  id: z.string().uuid().optional(),
+  id: pgUuidSchema.optional(),
   name: z.string().min(1).max(200),
   loan_type: z.enum(["conventional", "fha", "va", "usda", "jumbo"]),
   term_months: z.number().int().min(60).max(480),
@@ -13,8 +14,8 @@ export const pricingProductSchema = z.object({
 });
 
 export const rateSheetSchema = z.object({
-  id: z.string().uuid().optional(),
-  loan_product_id: z.string().uuid(),
+  id: pgUuidSchema.optional(),
+  loan_product_id: pgUuidSchema,
   effective_date: z.string().min(1),
   expiry_date: z.string().optional(),
   margin: z.number().min(0).max(5),
@@ -23,8 +24,8 @@ export const rateSheetSchema = z.object({
 });
 
 export const rateLockSchema = z.object({
-  loanId: z.string().uuid(),
-  loanProductId: z.string().uuid(),
+  loanId: pgUuidSchema,
+  loanProductId: pgUuidSchema,
   rate: z.number().min(0),
   apr: z.number().min(0),
   points: z.number().min(0),
@@ -32,5 +33,5 @@ export const rateLockSchema = z.object({
 });
 
 export const recalculatePricingSchema = z.object({
-  loanId: z.string().uuid(),
+  loanId: pgUuidSchema,
 });

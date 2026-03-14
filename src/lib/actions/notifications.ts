@@ -6,11 +6,12 @@ import { z } from "zod";
 import { ensureDefaultEmailTemplates } from "@/lib/notifications/templates";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { pgUuidSchema } from "@/lib/validations/shared";
 import type { ActionResult } from "@/types/auth";
 import type { EmailTemplateRecord } from "@/types/communications";
 
 const emailTemplateSchema = z.object({
-  id: z.string().uuid().optional(),
+  id: pgUuidSchema.optional(),
   trigger_event: z.string().min(1).max(100),
   subject: z.string().min(1).max(200),
   body_html: z.string().min(1).max(20000),

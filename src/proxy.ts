@@ -62,6 +62,10 @@ export async function proxy(request: NextRequest) {
 
   const dashboardPath = getDashboardPathForRole(profile.role);
 
+  if (pathname === "/") {
+    return NextResponse.redirect(new URL(dashboardPath, request.url));
+  }
+
   if (matchesRoute(pathname, ENTRY_ROUTES)) {
     return NextResponse.redirect(new URL(dashboardPath, request.url));
   }

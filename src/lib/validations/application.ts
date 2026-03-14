@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pgUuidSchema } from "@/lib/validations/shared";
 
 const positiveCurrency = z.number().min(0);
 
@@ -117,7 +118,7 @@ export const step6Schema = z.object({
 });
 
 export const documentUploadSchema = z.object({
-  loanId: z.string().uuid(),
+  loanId: pgUuidSchema,
   documentType: z.enum([
     "paystub",
     "w2",
@@ -143,9 +144,9 @@ export const documentUploadSchema = z.object({
 });
 
 export const messageSchema = z.object({
-  loanId: z.string().uuid(),
+  loanId: pgUuidSchema,
   body: z.string().min(1).max(4000),
-  attachmentIds: z.array(z.string().uuid()).max(5).optional(),
+  attachmentIds: z.array(pgUuidSchema).max(5).optional(),
 });
 
 export const fullApplicationSchema = step1Schema
