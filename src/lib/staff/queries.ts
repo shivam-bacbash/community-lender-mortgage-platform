@@ -2,9 +2,9 @@ import { cache } from "react";
 import { notFound, redirect } from "next/navigation";
 import type { User } from "@supabase/supabase-js";
 
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isStaffRole } from "@/lib/auth/roles";
+import { parseUnderwritingSummaryResult } from "@/lib/ai/results";
 import type {
   StaffActivityItem,
   StaffLoanHeader,
@@ -49,6 +49,7 @@ async function requireStaffContext(): Promise<{
 }
 
 async function getNameMap(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
   ids: string[],
   organizationId: string,
 ): Promise<Map<string, { name: string; role: string }>> {
@@ -56,8 +57,7 @@ async function getNameMap(
     return new Map();
   }
 
-  const admin = createSupabaseAdminClient();
-  const { data } = await admin
+  const { data } = await supabase
     .from("profiles")
     .select("id, first_name, last_name, role")
     .eq("organization_id", organizationId)
@@ -87,9 +87,23 @@ function extractRiskScore(result: Json): number | null {
   return value;
 }
 
-async function getStaffMembers(organizationId: string) {
-  const admin = createSupabaseAdminClient();
-  const { data } = await admin
+function extractRecommendation(result: Json): string | null {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return null;
+  }
+
+  if ("recommendation" in result && typeof result.recommendation === "string") {
+    return result.recommendation;
+  }
+
+  return null;
+}
+
+async function getStaffMembers(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  organizationId: string,
+) {
+  const { data } = await supabase
     .from("profiles")
     .select("id, first_name, last_name, role")
     .eq("organization_id", organizationId)
@@ -170,8 +184,7 @@ export async function getStaffDashboardData(): Promise<{
 
   const taskLoanMap = new Map((taskLoans ?? []).map((loan) => [loan.id, loan.loan_number]));
 
-  const admin = createSupabaseAdminClient();
-  const { data: auditLogs } = await admin
+  const { data: auditLogs } = await supabase
     .from("audit_logs")
     .select("id, action, resource_type, resource_id, actor_id, created_at")
     .eq("organization_id", profile.organization_id)
@@ -179,6 +192,7 @@ export async function getStaffDashboardData(): Promise<{
     .limit(20);
 
   const actorMap = await getNameMap(
+    supabase,
     [...new Set((auditLogs ?? []).map((log) => log.actor_id).filter(Boolean) as string[])],
     profile.organization_id,
   );
@@ -245,11 +259,12 @@ export async function readStaffPipelineData(): Promise<StaffPipelineData> {
       .is("deleted_at", null)
       .not("status", "in", '("funded","denied","withdrawn","cancelled")')
       .order("updated_at", { ascending: false }),
-    getStaffMembers(profile.organization_id),
+    getStaffMembers(supabase, profile.organization_id),
     supabase
       .from("ai_analyses")
       .select("id, loan_application_id, result, created_at")
-      .eq("analysis_type", "prequalification")
+      .eq("analysis_type", "underwriting_summary")
+      .eq("status", "completed")
       .order("created_at", { ascending: false }),
   ]);
 
@@ -269,14 +284,18 @@ export async function readStaffPipelineData(): Promise<StaffPipelineData> {
   const borrowerIds = [...new Set(loans.map((loan) => loan.borrower_id))];
   const loanOfficerIds = [...new Set(loans.map((loan) => loan.loan_officer_id).filter(Boolean) as string[])];
   const profileMap = await getNameMap(
+    supabase,
     [...new Set([...borrowerIds, ...loanOfficerIds])],
     profile.organization_id,
   );
 
-  const aiMap = new Map<string, number | null>();
+  const aiMap = new Map<string, { riskScore: number | null; recommendation: string | null }>();
   for (const analysis of aiResult.data ?? []) {
     if (!aiMap.has(analysis.loan_application_id)) {
-      aiMap.set(analysis.loan_application_id, extractRiskScore(analysis.result));
+      aiMap.set(analysis.loan_application_id, {
+        riskScore: extractRiskScore(analysis.result),
+        recommendation: extractRecommendation(analysis.result),
+      });
     }
   }
 
@@ -300,7 +319,8 @@ export async function readStaffPipelineData(): Promise<StaffPipelineData> {
       loan_officer_name: loan.loan_officer_id
         ? profileMap.get(loan.loan_officer_id)?.name ?? null
         : null,
-      ai_risk_score: aiMap.get(loan.id) ?? null,
+      ai_risk_score: aiMap.get(loan.id)?.riskScore ?? null,
+      ai_recommendation: aiMap.get(loan.id)?.recommendation ?? null,
       days_in_stage: Math.max(
         0,
         Math.floor((Date.now() - new Date(loan.updated_at).getTime()) / (1000 * 60 * 60 * 24)),
@@ -339,7 +359,7 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
     notFound();
   }
 
-  const staffMembers = await getStaffMembers(profile.organization_id);
+  const staffMembers = await getStaffMembers(supabase, profile.organization_id);
 
   const [
     borrowerData,
@@ -505,7 +525,7 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
       .order("decided_at", { ascending: false }),
     supabase
       .from("ai_analyses")
-      .select("id, analysis_type, created_at, confidence_score, result")
+      .select("id, analysis_type, created_at, status, confidence_score, error_message, result")
       .eq("loan_application_id", loanId)
       .order("created_at", { ascending: false }),
     supabase
@@ -516,7 +536,7 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
       .order("pulled_at", { ascending: false })
       .limit(1)
       .maybeSingle(),
-    createSupabaseAdminClient()
+    supabase
       .from("audit_logs")
       .select("id, action, created_at, actor_id, after_state")
       .eq("organization_id", profile.organization_id)
@@ -526,16 +546,19 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
   ]);
 
   const stageHistoryActorMap = await getNameMap(
+    supabase,
     [...new Set((auditData.data ?? []).map((item) => item.actor_id).filter(Boolean) as string[])],
     profile.organization_id,
   );
 
   const uploaderMap = await getNameMap(
+    supabase,
     [...new Set((documentsData.data ?? []).map((doc) => doc.uploaded_by))],
     profile.organization_id,
   );
 
   const assigneeMap = await getNameMap(
+    supabase,
     [
       ...new Set([
         ...(conditionsData.data ?? []).map((condition) => condition.assigned_to).filter(Boolean),
@@ -662,7 +685,13 @@ export async function getStaffLoanWorkspace(loanId: string): Promise<StaffLoanWo
         ? assigneeMap.get(decision.underwriter_id)?.name ?? null
         : null,
     })),
-    aiAnalyses: aiData.data ?? [],
+    aiAnalyses: (aiData.data ?? []).map((analysis) => ({
+      ...analysis,
+      parsed_underwriting:
+        analysis.analysis_type === "underwriting_summary"
+          ? parseUnderwritingSummaryResult(analysis.result)
+          : null,
+    })),
     ratios: {
       dti: grossIncome > 0 ? (monthlyDebt + monthlyHousing) / grossIncome : null,
       ltv:

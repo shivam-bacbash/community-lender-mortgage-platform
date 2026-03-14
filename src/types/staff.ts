@@ -1,5 +1,6 @@
 import type { Json } from "@/types/database";
 import type { Role } from "@/types/auth";
+import type { UnderwritingSummaryResult } from "@/lib/ai/results";
 
 export interface StaffProfileSummary {
   id: string;
@@ -58,6 +59,7 @@ export interface PipelineLoan {
   borrower_name: string;
   loan_officer_name: string | null;
   ai_risk_score: number | null;
+  ai_recommendation: string | null;
   days_in_stage: number;
 }
 
@@ -230,8 +232,11 @@ export interface StaffLoanWorkspace {
     id: string;
     analysis_type: string;
     created_at: string;
+    status: string;
     confidence_score: number | null;
+    error_message: string | null;
     result: Json;
+    parsed_underwriting: UnderwritingSummaryResult | null;
   }>;
   ratios: {
     dti: number | null;

@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import type { BorrowerLoanDetails } from "@/types/borrower";
@@ -17,9 +18,34 @@ async function fetchBorrowerLoan(loanId: string) {
 }
 
 export function useBorrowerLoan(loanId: string, initialData: BorrowerLoanDetails) {
-  return useQuery({
+  const [mountedAt] = useState(() => Date.now());
+  const [now, setNow] = useState(mountedAt);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const query = useQuery({
     queryKey: ["loan", loanId],
     queryFn: () => fetchBorrowerLoan(loanId),
     initialData,
+    refetchInterval: (query) => {
+      if (query.state.data?.prequalification) {
+        return false;
+      }
+
+      return now - mountedAt < 30_000 ? 3_000 : false;
+    },
   });
+
+  return {
+    ...query,
+    isPollingPrequalification: !query.data?.prequalification && now - mountedAt < 30_000,
+  };
 }

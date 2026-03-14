@@ -1,4 +1,5 @@
 import type { Json } from "@/types/database";
+import type { PrequalificationResult } from "@/lib/ai/results";
 
 export interface BorrowerDashboardLoan {
   id: string;
@@ -147,6 +148,7 @@ export interface PrequalificationAnalysis {
   created_at: string;
   status: string;
   result: Json;
+  parsed_result: PrequalificationResult | null;
 }
 
 export interface BorrowerLoanDetails {

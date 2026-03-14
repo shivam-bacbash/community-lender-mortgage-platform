@@ -1,8 +1,8 @@
 import { cache } from "react";
 import { notFound, redirect } from "next/navigation";
 
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { parsePrequalificationResult } from "@/lib/ai/results";
 import type {
   BorrowerDashboardLoan,
   BorrowerDocumentListItem,
@@ -382,7 +382,12 @@ export async function readBorrowerLoanDetails(
       created_at: message.created_at,
       sender_name: profileMap.get(message.sender_id)?.name ?? "Loan team",
     })),
-    prequalification: prequalResult.data,
+    prequalification: prequalResult.data
+      ? {
+          ...prequalResult.data,
+          parsed_result: parsePrequalificationResult(prequalResult.data.result),
+        }
+      : null,
   };
 }
 
@@ -412,10 +417,9 @@ export async function getBorrowerLoanDocuments(
     throw new Error(error.message);
   }
 
-  const admin = createSupabaseAdminClient();
   const signedUrls = await Promise.all(
     (data ?? []).map(async (document) => {
-      const { data: signedData } = await admin.storage
+      const { data: signedData } = await supabase.storage
         .from("documents")
         .createSignedUrl(document.storage_path, 3600);
 

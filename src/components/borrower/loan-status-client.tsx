@@ -1,42 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { Clock3, FileText, MessageSquare, Sparkles, TriangleAlert } from "lucide-react";
+import { Clock3, FileText, MessageSquare, TriangleAlert } from "lucide-react";
 
+import { AIPrequalCard } from "@/components/loan/ai-prequal-card";
 import { Card } from "@/components/ui/card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { useBorrowerLoan } from "@/hooks/use-borrower-loan";
 import { useLoanRealtime } from "@/hooks/use-loan-realtime";
 import { formatCurrency, formatDate } from "@/lib/utils/format";
 import type { BorrowerLoanDetails } from "@/types/borrower";
-
-function renderAnalysisContent(analysis: BorrowerLoanDetails["prequalification"]) {
-  if (!analysis) {
-    return {
-      title: "Pre-qualification pending",
-      subtitle: "This automated assessment will appear after the AI pre-qualification module runs.",
-      strengths: [] as string[],
-      concerns: [] as string[],
-      score: null as number | null,
-    };
-  }
-
-  const result = analysis.result as {
-    score?: number;
-    recommendation?: string;
-    strengths?: string[];
-    concerns?: string[];
-    raw?: string;
-  };
-
-  return {
-    title: result.recommendation?.replaceAll("_", " ") ?? "Automated assessment available",
-    subtitle: result.raw ?? "This is an automated assessment, not a final decision.",
-    strengths: result.strengths ?? [],
-    concerns: result.concerns ?? [],
-    score: result.score ?? null,
-  };
-}
 
 export function LoanStatusClient({
   loanId,
@@ -48,8 +21,8 @@ export function LoanStatusClient({
   const query = useBorrowerLoan(loanId, initialLoan);
   const loan = query.data;
   useLoanRealtime(loanId);
-
-  const analysis = renderAnalysisContent(loan.prequalification);
+  const prequalification = loan.prequalification?.parsed_result ?? null;
+  const isPrequalPending = !prequalification && query.isPollingPrequalification;
 
   return (
     <div className="space-y-6">
@@ -106,50 +79,17 @@ export function LoanStatusClient({
       </Card>
 
       <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-        <Card className="p-6">
-          <div className="flex items-center gap-3">
-            <Sparkles className="h-5 w-5 text-primary-600" aria-hidden="true" />
-            <div>
-              <h3 className="text-lg font-semibold text-gray-900">AI pre-qualification</h3>
-              <p className="text-sm text-gray-600">
-                This is an automated assessment, not a final decision.
-              </p>
-            </div>
-          </div>
-          <div className="mt-6 rounded-2xl bg-gray-25 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold capitalize text-gray-900">{analysis.title}</p>
-                <p className="mt-1 text-sm text-gray-600">{analysis.subtitle}</p>
-              </div>
-              {analysis.score !== null ? (
-                <div className="rounded-full bg-white px-4 py-2 text-sm font-semibold text-gray-900 shadow-sm">
-                  Score {analysis.score}
-                </div>
-              ) : null}
-            </div>
-            {analysis.strengths.length ? (
-              <div className="mt-4">
-                <p className="text-xs uppercase tracking-[0.16em] text-gray-500">Strengths</p>
-                <ul className="mt-2 space-y-2 text-sm text-gray-700">
-                  {analysis.strengths.map((item) => (
-                    <li key={item}>• {item}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-            {analysis.concerns.length ? (
-              <div className="mt-4">
-                <p className="text-xs uppercase tracking-[0.16em] text-gray-500">Concerns</p>
-                <ul className="mt-2 space-y-2 text-sm text-gray-700">
-                  {analysis.concerns.map((item) => (
-                    <li key={item}>• {item}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-          </div>
-        </Card>
+        <AIPrequalCard
+          loading={isPrequalPending}
+          score={prequalification?.score ?? null}
+          recommendation={prequalification?.recommendation ?? null}
+          strengths={prequalification?.strengths ?? []}
+          concerns={prequalification?.concerns ?? []}
+          estimatedDti={prequalification?.estimated_dti ?? null}
+          estimatedLtv={prequalification?.estimated_ltv ?? null}
+          rationale={prequalification?.rationale ?? null}
+          disclaimer="This is an automated pre-assessment, not a final credit decision."
+        />
 
         <div className="space-y-6">
           <Card className="p-6">

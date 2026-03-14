@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 
+import { analyzeUnderwriting } from "@/lib/ai/analyses";
 import { getResendClient } from "@/lib/email/resend";
 import {
   completeTaskSchema,
@@ -31,7 +32,6 @@ import type { ActionResult } from "@/types/auth";
 
 type StaffContext = {
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
-  admin: ReturnType<typeof createSupabaseAdminClient>;
   profile: {
     id: string;
     organization_id: string;
@@ -41,9 +41,12 @@ type StaffContext = {
   };
 };
 
+function getAdminClient() {
+  return createSupabaseAdminClient();
+}
+
 async function requireStaffContext(): Promise<StaffContext> {
   const supabase = await createSupabaseServerClient();
-  const admin = createSupabaseAdminClient();
   const {
     data: { user },
     error: userError,
@@ -63,7 +66,7 @@ async function requireStaffContext(): Promise<StaffContext> {
     throw new Error("Staff access is required.");
   }
 
-  return { supabase, admin, profile };
+  return { supabase, profile };
 }
 
 async function getLoanForStaff(loanId: string, context: StaffContext) {
@@ -94,7 +97,7 @@ async function writeAuditLog(params: {
 }) {
   const { context, action, resourceType, resourceId, beforeState, afterState } = params;
 
-  await context.admin.from("audit_logs").insert({
+  await context.supabase.from("audit_logs").insert({
     organization_id: context.profile.organization_id,
     actor_id: context.profile.id,
     action,
@@ -116,8 +119,9 @@ async function notifyBorrower(params: {
   actionUrl: string;
 }) {
   const { context, borrowerId, ...notification } = params;
+  const admin = getAdminClient();
 
-  await context.admin.from("notifications").insert({
+  await admin.from("notifications").insert({
     organization_id: context.profile.organization_id,
     recipient_id: borrowerId,
     type: notification.type,
@@ -144,6 +148,35 @@ function revalidateLoanPaths(loanId: string) {
   revalidatePath(`/staff/loans/${loanId}/conditions`);
   revalidatePath(`/staff/loans/${loanId}/tasks`);
   revalidatePath(`/staff/loans/${loanId}/messages`);
+}
+
+export async function rerunUnderwritingAnalysis(
+  loanId: string,
+): Promise<ActionResult<void>> {
+  try {
+    const context = await requireStaffContext();
+    await getLoanForStaff(loanId, context);
+
+    if (!["loan_officer", "underwriter", "admin"].includes(context.profile.role)) {
+      return { data: null, error: "This role cannot run AI underwriting analysis." };
+    }
+
+    await analyzeUnderwriting(loanId, context.profile.id);
+
+    await writeAuditLog({
+      context,
+      action: "loan.ai_underwriting_rerun",
+      resourceType: "loan_application",
+      resourceId: loanId,
+      afterState: { triggered_by: context.profile.id },
+    });
+
+    revalidateLoanPaths(loanId);
+
+    return { data: undefined, error: null };
+  } catch (error) {
+    return { data: null, error: normalizeError(error) };
+  }
 }
 
 export async function moveLoanStage(
@@ -331,7 +364,7 @@ export async function submitUWDecision(
     });
 
     if (payload.decision === "approved" && process.env.RESEND_API_KEY) {
-      const borrowerUser = await context.admin.auth.admin.getUserById(loan.borrower_id);
+      const borrowerUser = await getAdminClient().auth.admin.getUserById(loan.borrower_id);
       const email = borrowerUser.data.user?.email;
 
       if (email) {
@@ -619,7 +652,7 @@ export async function createTask(values: TaskInput): Promise<ActionResult<void>>
     });
 
     if (payload.assigned_to) {
-      await context.admin.from("notifications").insert({
+      await getAdminClient().from("notifications").insert({
         organization_id: context.profile.organization_id,
         recipient_id: payload.assigned_to,
         type: "task_assigned",

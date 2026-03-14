@@ -1,4 +1,4 @@
-import { AIAnalysisCard } from "@/components/loan/ai-analysis-card";
+import { AIUnderwritingCard } from "@/components/loan/ai-underwriting-card";
 import { UWDecisionForm } from "@/components/loan/uw-decision-form";
 import { Card } from "@/components/ui/card";
 import { getStaffLoanWorkspace } from "@/lib/staff/queries";
@@ -16,7 +16,7 @@ export default async function StaffLoanUnderwritingPage({
   return (
     <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
       <div className="space-y-6">
-        <AIAnalysisCard workspace={workspace} />
+        <AIUnderwritingCard workspace={workspace} />
         <Card className="p-6">
           <h2 className="text-lg font-semibold text-gray-900">Latest decision</h2>
           {latestDecision ? (

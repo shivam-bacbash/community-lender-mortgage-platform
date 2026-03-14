@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { getStaffLoanWorkspace } from "@/lib/staff/queries";
-import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import type { DocumentRequestInput } from "@/lib/validations/loans";
 
 export default async function StaffLoanDocumentsPage({
@@ -16,10 +16,12 @@ export default async function StaffLoanDocumentsPage({
 }) {
   const { id } = await params;
   const workspace = await getStaffLoanWorkspace(id);
-  const admin = createSupabaseAdminClient();
+  const supabase = await createSupabaseServerClient();
   const signedUrls = await Promise.all(
     workspace.documents.map(async (document) => {
-      const { data } = await admin.storage.from("documents").createSignedUrl(document.storage_path, 3600);
+      const { data } = await supabase.storage
+        .from("documents")
+        .createSignedUrl(document.storage_path, 3600);
       return [document.id, data?.signedUrl ?? null] as const;
     }),
   );

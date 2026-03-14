@@ -3,17 +3,11 @@
 import Link from "next/link";
 import { useDraggable } from "@dnd-kit/core";
 
+import { AIScoreBadge } from "@/components/pipeline/ai-score-badge";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { cn } from "@/lib/utils/cn";
 import { formatCurrencyCompact } from "@/lib/utils/format";
 import type { PipelineLoan, PipelineStageSummary } from "@/types/staff";
-
-function getRiskTone(score: number | null) {
-  if (score === null) return "bg-gray-100 text-gray-600";
-  if (score >= 75) return "bg-success-25 text-success-700";
-  if (score >= 50) return "bg-warning-25 text-warning-700";
-  return "bg-error-25 text-error-700";
-}
 
 export function LoanCard({
   loan,
@@ -68,9 +62,7 @@ export function LoanCard({
         <span className="rounded-full bg-gray-100 px-2.5 py-1 font-medium capitalize text-gray-700">
           {loan.loan_purpose.replaceAll("_", " ")}
         </span>
-        <span className={cn("rounded-full px-2.5 py-1 font-medium", getRiskTone(loan.ai_risk_score))}>
-          AI {loan.ai_risk_score ?? "n/a"}
-        </span>
+        <AIScoreBadge score={loan.ai_risk_score} recommendation={loan.ai_recommendation} />
       </div>
       <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
         <span>{daysInStage}d in stage</span>

@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { AIAnalysisCard } from "@/components/loan/ai-analysis-card";
+import { AIUnderwritingCard } from "@/components/loan/ai-underwriting-card";
 import { LoanSummaryCard } from "@/components/loan/loan-summary-card";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils/cn";
@@ -97,7 +97,7 @@ export default async function StaffLoanOverviewPage({
           </Card>
         </div>
         <div className="space-y-6">
-          <AIAnalysisCard workspace={workspace} />
+          <AIUnderwritingCard workspace={workspace} />
           <Card className="p-6">
             <h2 className="text-lg font-semibold text-gray-900">Counts</h2>
             <div className="mt-4 grid gap-3 sm:grid-cols-3">

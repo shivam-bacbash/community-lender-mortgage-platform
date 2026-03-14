@@ -4,8 +4,7 @@ import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { randomUUID, createHash } from "node:crypto";
 
-import { analyzeApplication } from "@/lib/ai/claude";
-import { getBorrowerDraftApplication } from "@/lib/borrower/queries";
+import { runAutomaticAnalyses } from "@/lib/ai/analyses";
 import { getResendClient } from "@/lib/email/resend";
 import {
   documentUploadSchema,
@@ -477,27 +476,6 @@ export async function submitBorrowerApplication(
       return { data: null, error: "Only draft applications can be submitted." };
     }
 
-    const { draft } = await getBorrowerDraftApplication();
-    const snapshot =
-      draft?.id === applicationId
-        ? {
-            loan: {
-              id: draft.id,
-              loan_number: draft.loan_number,
-              status: draft.status,
-              loan_amount: draft.loan_amount,
-              loan_purpose: draft.loan_purpose,
-              loan_type: draft.loan_type,
-              down_payment: draft.down_payment,
-            },
-            property: draft.property,
-            borrowerProfile: draft.borrowerProfile,
-            employmentRecords: draft.employmentRecords,
-            assets: draft.assets,
-            liabilities: draft.liabilities,
-          }
-        : {};
-
     const { error } = await supabase
       .from("loan_applications")
       .update({
@@ -514,52 +492,10 @@ export async function submitBorrowerApplication(
     revalidatePath(`/borrower/loans/${applicationId}`);
 
     after(async () => {
-      const admin = createSupabaseAdminClient();
-
       try {
-        if (process.env.ANTHROPIC_API_KEY) {
-          const response = await analyzeApplication({
-            type: "prequalification",
-            applicationId,
-            snapshot,
-          });
-
-          const textContent = response.content
-            .map((item) => ("text" in item ? item.text : ""))
-            .join("\n")
-            .trim();
-
-          await admin.from("ai_analyses").insert({
-            loan_application_id: applicationId,
-            analysis_type: "prequalification",
-            triggered_by: "auto",
-            triggered_by_profile: profile.id,
-            input_snapshot: snapshot,
-            result: textContent ? { raw: textContent } : {},
-            status: "completed",
-          });
-        } else {
-          await admin.from("ai_analyses").insert({
-            loan_application_id: applicationId,
-            analysis_type: "prequalification",
-            triggered_by: "auto",
-            triggered_by_profile: profile.id,
-            input_snapshot: snapshot,
-            result: {},
-            status: "pending",
-          });
-        }
-      } catch (analysisError) {
-        await admin.from("ai_analyses").insert({
-          loan_application_id: applicationId,
-          analysis_type: "prequalification",
-          triggered_by: "auto",
-          triggered_by_profile: profile.id,
-          input_snapshot: snapshot,
-          result: {},
-          status: "failed",
-          error_message: normalizeStepError(analysisError),
-        });
+        await runAutomaticAnalyses(applicationId, profile.id);
+      } catch {
+        // Individual analysis functions persist failed rows. Nothing else should block the borrower.
       }
 
       try {

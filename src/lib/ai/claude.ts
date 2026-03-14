@@ -1,17 +1,41 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 
-const anthropic = process.env.ANTHROPIC_API_KEY
-  ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
+export const AI_MODEL = "gpt-5-mini";
+
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
   : null;
 
-export async function analyzeApplication(payload: object) {
-  if (!anthropic) {
-    throw new Error("ANTHROPIC_API_KEY is not configured.");
+export async function callClaude(
+  systemPrompt: string,
+  userPrompt: string,
+  maxTokens = 1024,
+) {
+  if (!openai) {
+    throw new Error("OPENAI_API_KEY is not configured.");
   }
 
-  return anthropic.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 1024,
-    messages: [{ role: "user", content: JSON.stringify(payload) }],
+  const startMs = Date.now();
+  const response = await openai.responses.create({
+    model: AI_MODEL,
+    max_output_tokens: maxTokens,
+    input: [
+      {
+        role: "system",
+        content: systemPrompt,
+      },
+      {
+        role: "user",
+        content: userPrompt,
+      },
+    ],
   });
+
+  return {
+    text: response.output_text.trim(),
+    tokensUsed:
+      (response.usage?.input_tokens ?? 0) +
+      (response.usage?.output_tokens ?? 0),
+    latencyMs: Date.now() - startMs,
+  };
 }
