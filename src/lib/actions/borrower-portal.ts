@@ -12,6 +12,7 @@ import {
   type DocumentType,
 } from "@/lib/documents/config";
 import { getResendClient } from "@/lib/email/resend";
+import { applyDefaultFees } from "@/lib/pricing/calculator";
 import {
   documentUploadSchema,
   messageSchema,
@@ -70,7 +71,7 @@ async function getOwnedLoan(
 ) {
   const { data, error } = await supabase
     .from("loan_applications")
-    .select("id, organization_id, borrower_id, co_borrower_id, status, loan_number")
+    .select("id, organization_id, borrower_id, co_borrower_id, status, loan_number, loan_type")
     .eq("id", loanId)
     .or(`borrower_id.eq.${profileId},co_borrower_id.eq.${profileId}`)
     .is("deleted_at", null)
@@ -180,6 +181,7 @@ export async function saveLoanStep1(
       }
 
       loanId = createdLoan.id;
+      await applyDefaultFees(createdLoan.id, parsed.loan_type);
     }
 
     const { data: existingProperty } = await supabase
@@ -493,6 +495,8 @@ export async function submitBorrowerApplication(
     if (error) {
       throw new Error(error.message);
     }
+
+    await applyDefaultFees(applicationId, loan.loan_type);
 
     revalidatePath("/borrower/dashboard");
     revalidatePath(`/borrower/loans/${applicationId}`);
