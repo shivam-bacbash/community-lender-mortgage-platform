@@ -43,6 +43,15 @@ export default async function StaffLoanOverviewPage({
                   Request docs
                 </Link>
                 <Link
+                  href={`/staff/loans/${id}/compliance`}
+                  className={cn(
+                    "inline-flex items-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 shadow-sm transition-colors",
+                    "hover:bg-gray-50 hover:text-gray-900",
+                  )}
+                >
+                  Compliance
+                </Link>
+                <Link
                   href={`/staff/loans/${id}/pricing`}
                   className={cn(
                     "inline-flex items-center rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-semibold text-gray-700 shadow-sm transition-colors",

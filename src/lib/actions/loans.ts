@@ -7,6 +7,7 @@ import {
   parseRiskAssessmentResult,
   parseUnderwritingSummaryResult,
 } from "@/lib/ai/results";
+import { computeQMForLoan, upsertHMDARecordForLoan } from "@/lib/actions/compliance";
 import { getDocumentTypeLabel } from "@/lib/documents/config";
 import { createNotification } from "@/lib/notifications/service";
 import {
@@ -407,6 +408,8 @@ export async function submitUWDecision(
         ? Number(loan.loan_amount ?? 0) / Number(propertyValue)
         : null;
 
+    const qmResult = await computeQMForLoan(loanId, { dti: dtiRatio }).catch(() => null);
+
     const { error: insertError } = await context.supabase.from("underwriting_decisions").insert({
       loan_application_id: loanId,
       underwriter_id: context.profile.id,
@@ -418,7 +421,10 @@ export async function submitUWDecision(
       dti_ratio: dtiRatio,
       ltv_ratio: computedLtv,
       credit_score_used: loanWorkspace.data?.score ?? null,
-      ai_summary: aiSummary ?? {},
+      ai_summary: {
+        ...(aiSummary ?? {}),
+        ...(qmResult ? { qm_result: qmResult } : {}),
+      },
     });
 
     if (insertError) {
@@ -455,6 +461,7 @@ export async function submitUWDecision(
       afterState: {
         decision: payload.decision,
         approved_amount: payload.approved_amount ?? null,
+        qm_result: qmResult,
       },
     });
 
@@ -476,6 +483,13 @@ export async function submitUWDecision(
         portal_url: `${getAppUrl()}/borrower/loans/${loanId}`,
       },
     });
+
+    if (["denied", "withdrawn", "funded"].includes(nextStatus)) {
+      await upsertHMDARecordForLoan(loanId, payload.denial_reasons ?? []);
+      revalidatePath(`/staff/loans/${loanId}/compliance`);
+      revalidatePath("/admin/compliance");
+      revalidatePath("/admin/compliance/audit");
+    }
 
     revalidateLoanPaths(loanId);
 

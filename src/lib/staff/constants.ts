@@ -8,6 +8,7 @@ export const STAFF_LOAN_TABS = [
   { href: "/borrower", label: "Borrower" },
   { href: "/documents", label: "Documents" },
   { href: "/underwriting", label: "Underwriting" },
+  { href: "/compliance", label: "Compliance" },
   { href: "/pricing", label: "Pricing" },
   { href: "/conditions", label: "Conditions" },
   { href: "/tasks", label: "Tasks" },
