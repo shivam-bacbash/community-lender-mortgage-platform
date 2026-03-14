@@ -135,10 +135,10 @@ export function LoanProductsManager({ products }: { products: PricingProduct[] }
                   <Button loading={isPending} onClick={() => persistDraft(draft)}>
                     Save
                   </Button>
-                  <Link href={`/admin/settings/products/${product.id}`} className="text-sm font-semibold text-primary-700">
+                  <Link href={`/admin/products/${product.id}`} className="text-sm font-semibold text-primary-700">
                     Details
                   </Link>
-                  <Link href={`/admin/settings/products/${product.id}/rates`} className="text-sm font-semibold text-primary-700">
+                  <Link href={`/admin/products/${product.id}`} className="text-sm font-semibold text-primary-700">
                     Rates
                   </Link>
                 </div>
